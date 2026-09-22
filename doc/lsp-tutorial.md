@@ -8,6 +8,12 @@ The finished product of every step lives in the repository at
 [`crates/incraparse-lsp/examples/mini_lang_server.rs`](../crates/incraparse-lsp/examples/mini_lang_server.rs);
 diff your code against it whenever something looks off.
 
+> Everything in this tutorial is checked against the pieces it touches: the
+> server code compiles and answers the protocol (verified with the `poke.py`
+> script in step 4), the VS Code files install with current
+> `vscode-languageclient` (v10), and the Neovim recipe was run end-to-end on
+> Neovim 0.12 — broken file in, squiggle out.
+
 ## 0. What we're building
 
 ```
@@ -600,7 +606,7 @@ minilang-vscode/
     ]
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.0"
+    "vscode-languageclient": "^10.0.0"
   }
 }
 ```
@@ -625,8 +631,9 @@ let client;
 function activate(context) {
   const serverOptions = {
     // `run` is used for normal installs, `debug` when hosted via F5.
-    run: { command: SERVER, transport: 0 /* stdio */ },
-    debug: { command: SERVER, transport: 0 },
+    // stdio is the default transport — exactly what our server speaks.
+    run: { command: SERVER },
+    debug: { command: SERVER },
   };
   const clientOptions = {
     documentSelector: [{ language: "minilang" }],

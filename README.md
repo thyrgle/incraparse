@@ -170,6 +170,10 @@ picking a server framework for you (only `lsp-types` — no tokio, no I/O):
 server (diagnostics + document symbols) with an end-to-end stdio smoke test
 in `crates/incraparse-lsp/tests/server_smoke.rs`.
 
+**Want to build your own?** Follow [`doc/lsp-tutorial.md`](doc/lsp-tutorial.md)
+— a step-by-step guide that turns MiniLang into a working language server
+and runs it in VS Code and Neovim.
+
 ## Executors and cancellation
 
 A round's batch of nodes goes through the [`Executor`] trait:
