@@ -7,7 +7,9 @@ This repository is a cargo workspace with two crates:
 | Crate | Role |
 |-------|------|
 | [`crates/incraparse`](crates/incraparse) | The engine: passes, schedules, fixpoint rounds, incremental edits, executors, cancellation. Zero required dependencies. |
-| [`crates/incraparse-lsp`](crates/incraparse-lsp) | Framework-agnostic LSP adapter: position encodings, `Document` change translation, diagnostics bridge. Depends only on `incraparse` + `lsp-types`. |
+| [`crates/incraparse-lsp`](crates/incraparse-lsp) | LSP adapter: `serve()` + `Language` trait skeleton, position encodings, `Document` change translation, diagnostics bridge. |
+| [`crates/incraparse-nom`](crates/incraparse-nom) | Wrap nom 8 parsers in passes — correct absolute-span rebasing included. |
+| [`crates/incraparse-chumsky`](crates/incraparse-chumsky) | Wrap chumsky 0.10 parsers in passes — same rebasing, `SimpleSpan` in. |
 
 `incraparse` is *not* another parser combinator library. It is the missing
 piece **around** them: an engine that executes **schedules of passes** over a

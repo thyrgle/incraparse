@@ -664,5 +664,118 @@ You should see:
    when the body brace is missing, and emit a dedicated "unclosed brace"
    diagnostic from the tree.
 
-Happy parsing — and when MiniLang outgrows hand-rolled scanning, wrap
-`nom` or `chumsky` in a `Pass`; the engine doesn't care.
+Happy parsing.
+
+## Appendix: wrapping a real combinator
+
+Hand-rolled scanning is fine for MiniLang, but you may already have a
+[nom](https://docs.rs/nom) or [chumsky](https://docs.rs/chumsky) grammar —
+or prefer combinators for a bigger language. The adapter crates make either
+a drop-in for a pass; the engine never knows the difference.
+
+```toml
+[dependencies]
+incraparse-nom = "0.1"
+# or
+incraparse-chumsky = "0.1"
+```
+
+### The same `FunctionsPass` with nom
+
+The contract: your nom parser receives the region's text as a
+`LocatedSpan<&str>` and emits children as **slice-relative**
+`Range<usize>`s plus their contexts. The adapter rebases them to absolute
+spans (the fiddly part — a one-byte mistake here silently breaks
+incremental re-parsing), turns `Err(_)` into `Outcome::Failed`, and empty
+children into `Outcome::Done`.
+
+```rust
+use incraparse::{Outcome, Pass, Span};
+use incraparse_nom::{nom_pass, NomChildren};
+use nom::IResult;
+use nom::Parser;
+use nom::bytes::complete::{tag, take_while, take_while1};
+use nom::character::complete::multispace0;
+use nom::combinator::recognize;
+use nom_locate::LocatedSpan;
+use std::ops::Range;
+
+type Located<'a> = LocatedSpan<&'a str>;
+
+/// `def` + name + `(` + `)` — the skeleton; bodies are matched by
+/// a later round. Returns the name's context and a relative range.
+fn function_def(i: Located) -> IResult<Located, (Range<usize>, LangCtx)> {
+    let start = i.location_offset();
+    let (i, _) = tag("def").parse(i)?;
+    let (i, name) = recognize((multispace0, take_while1(|c: char| c.is_ascii_alphabetic())))
+        .parse(i)?;
+    let name = name.fragment().trim().to_string();
+    let (i, _) = recognize((multispace0, tag("("), take_while(|c: char| c != ')'), tag(")")))
+        .parse(i)?;
+    let end = i.location_offset();
+    Ok((i, (start..end, LangCtx::Function { name, params: vec![] })))
+}
+
+/// The file pass: try a function, otherwise skip one byte and resync.
+///
+/// **The trap this loop exists for:** `LocatedSpan::new` resets offset
+/// tracking to zero, so after a one-byte resync every later
+/// `location_offset()` is relative to the *resynced* fragment. The `base`
+/// counter rebases all ranges back into region coordinates — without it,
+/// every function after the first malformed line gets a wrong span, and the
+/// incremental tree stops reusing regions (or worse, matches the wrong
+/// ones).
+fn functions(i: Located) -> IResult<Located, NomChildren<LangCtx>> {
+    let mut children = Vec::new();
+    let mut i = i;
+    let mut base = 0usize;
+    loop {
+        if i.fragment().is_empty() {
+            break Ok((i, children));
+        }
+        match function_def(i) {
+            Ok((rest, (range, ctx))) => {
+                children.push((base + range.start..base + range.end, ctx));
+                base += range.end;
+                i = rest;
+            }
+            Err(_) => {
+                base += 1;
+                i = LocatedSpan::new(&i.fragment()[1..]);
+            }
+        }
+    }
+}
+
+struct FunctionsPass;
+
+impl Pass for FunctionsPass {
+    type Ctx = LangCtx;
+
+    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+        if !matches!(ctx, LangCtx::File) {
+            return Outcome::Failed;
+        }
+        nom_pass(functions).parse(source, span, ctx)
+    }
+}
+```
+
+The schedule, the server, the editor wiring — all unchanged. A complete
+runnable version (with balanced-brace body matching) is
+`crates/incraparse-nom/examples/mini_lang_nom.rs`.
+
+### Or chumsky
+
+`incraparse-chumsky` works the same way, with two chumsky-0.10-specific
+notes: parsers are built in a factory fn tied to the input's lifetime, and
+`parse` requires whole-input consumption (end region-tolerant parsers with
+`.then_ignore(any().repeated())`). See
+`crates/incraparse-chumsky/examples/mini_lang_chumsky.rs` for a full
+`FunctionsPass` including chumsky-side error recovery
+(`skip_then_retry_until`).
+
+> **Which one?** They're interchangeable at the pass boundary. nom's
+> scanning style suits token-ish recovery (skip a byte, resync); chumsky's
+> `recover_with` and error types are stronger for reporting *why* a region
+> failed — which pairs well with a future `Outcome::Failed(reason)`.
