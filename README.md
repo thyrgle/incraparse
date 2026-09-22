@@ -224,3 +224,5 @@ v0.1.0 — core semantics are settling; the API may still change.
 [`SerialExecutor`]: https://docs.rs/incraparse/latest/incraparse/struct.SerialExecutor.html
 [`RayonExecutor`]: https://docs.rs/incraparse/latest/incraparse/struct.RayonExecutor.html
 [`CancelToken`]: https://docs.rs/incraparse/latest/incraparse/struct.CancelToken.html
+[`LineIndex`]: https://docs.rs/incraparse-lsp/latest/incraparse_lsp/struct.LineIndex.html
+[`PositionEncoding`]: https://docs.rs/incraparse-lsp/latest/incraparse_lsp/enum.PositionEncoding.html
