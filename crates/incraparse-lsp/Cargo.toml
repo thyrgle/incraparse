@@ -1,0 +1,15 @@
+[package]
+name = "incraparse-lsp"
+version = "0.1.0"
+edition = "2021"
+description = "LSP adapter for incraparse: documents, position encodings, and diagnostics bridges."
+license = "MIT OR Apache-2.0"
+keywords = ["lsp", "language-server", "incremental", "parser"]
+categories = ["parsing", "development-tools"]
+
+[dependencies]
+incraparse = { path = "../incraparse", version = "0.1.0" }
+lsp-types = "0.97"
+
+[dev-dependencies]
+lsp-server = "0.10"
