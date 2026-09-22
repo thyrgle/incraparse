@@ -138,7 +138,7 @@ mod tests {
 
         assert_eq!(PositionEncoding::negotiate(&[]), None);
         assert_eq!(
-            PositionEncoding::negotiate(&[utf16.clone()]),
+            PositionEncoding::negotiate(std::slice::from_ref(&utf16)),
             Some(PositionEncoding::Utf16)
         );
         assert_eq!(
@@ -146,7 +146,7 @@ mod tests {
             Some(PositionEncoding::Utf8)
         );
         assert_eq!(
-            PositionEncoding::negotiate(&[utf32.clone(), utf16.clone()]),
+            PositionEncoding::negotiate(&[utf32.clone(), utf16]),
             Some(PositionEncoding::Utf16)
         );
         assert_eq!(

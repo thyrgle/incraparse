@@ -20,19 +20,13 @@ pub struct FailedNode<'a, C> {
 }
 
 /// Options for [`diagnostics`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DiagnosticsOptions {
     /// When `false` (the default), a node whose *ancestor* is already a
     /// failure is skipped — one broken function yields one diagnostic, not
     /// one per unparsed statement inside it. When `true`, every failing
     /// node is reported.
     pub cascades: bool,
-}
-
-impl Default for DiagnosticsOptions {
-    fn default() -> Self {
-        Self { cascades: false }
-    }
 }
 
 /// Builds diagnostics from a settled (or cancelled, or round-capped) parse.
