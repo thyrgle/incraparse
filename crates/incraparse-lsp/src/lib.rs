@@ -66,10 +66,12 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod diagnostics;
 mod document;
 mod encoding;
 mod line_index;
 
+pub use diagnostics::{diagnostics, DiagnosticsOptions, FailedNode};
 pub use document::Document;
 pub use encoding::PositionEncoding;
 pub use line_index::LineIndex;
