@@ -2,6 +2,13 @@
 
 Multi-pass **fixpoint parsing** for editors, LSPs, and compilers.
 
+This repository is a cargo workspace with two crates:
+
+| Crate | Role |
+|-------|------|
+| [`crates/incraparse`](crates/incraparse) | The engine: passes, schedules, fixpoint rounds, incremental edits, executors, cancellation. Zero required dependencies. |
+| [`crates/incraparse-lsp`](crates/incraparse-lsp) | Framework-agnostic LSP adapter: position encodings, `Document` change translation, diagnostics bridge. Depends only on `incraparse` + `lsp-types`. |
+
 `incraparse` is *not* another parser combinator library. It is the missing
 piece **around** them: an engine that executes **schedules of passes** over a
 growing parse tree until the tree settles — and a pass can wrap *any* parsing
@@ -141,6 +148,28 @@ ones it had previously exhausted. See `examples/mini_lang.rs` for a full
 walkthrough (append a function, then fix a broken return — 3 nodes re-parsed
 per edit instead of the whole file).
 
+## Language servers
+
+`incraparse-lsp` bridges the engine to the Language Server Protocol without
+picking a server framework for you (only `lsp-types` — no tokio, no I/O):
+
+- **Position encodings**: LSP positions are `(line, character)` in UTF-8,
+  UTF-16, or UTF-32 code units; spans are byte offsets. `LineIndex` +
+  `PositionEncoding` convert both ways, correctly, across multibyte text,
+  negotiating the encoding via the `positionEncoding` capability.
+- **`Document<C>`**: one open file — text, `Session`, client version.
+  Feed it the `didChange` payload; each change event is translated into a
+  byte-range `Edit` (so unchanged regions are reused) and the engine runs
+  once per batch, synchronously, on whatever thread you choose.
+- **Diagnostics**: `diagnostics(&doc, options, hook)` walks the settled tree
+  and lets your hook turn failing regions into publishable `Diagnostic`s
+  with encoding-correct ranges — including after a *cancelled* run, which is
+  the coarse-structure-survives-errors payoff.
+
+`crates/incraparse-lsp/examples/mini_lang_server.rs` is a complete small
+server (diagnostics + document symbols) with an end-to-end stdio smoke test
+in `crates/incraparse-lsp/tests/server_smoke.rs`.
+
 ## Executors and cancellation
 
 A round's batch of nodes goes through the [`Executor`] trait:
@@ -171,10 +200,10 @@ concurrency machinery at all.
 
 ## Roadmap
 
-- **`incraparse-lsp`**: an adapter crate wiring the engine into an LSP server
-  loop (background runs, cancellation, partial results).
 - Finer-grained reuse hooks (e.g. matching by user-supplied keys instead of
   `PartialEq`).
+- Optional background-run helper for LSP documents (request_parse /
+  on_settled on a worker thread).
 
 ## Status
 
