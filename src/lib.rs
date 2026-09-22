@@ -23,6 +23,17 @@
 //! the coarse structure even when deep passes are still failing. That is the
 //! error-resilience payoff.
 //!
+//! # Incremental edits
+//!
+//! The tree is built to be re-parsed, not rebuilt. [`Session`] wraps a
+//! [`ParseTree`] that can absorb [`Edit`]s: every span is remapped into the
+//! new coordinates and only the nodes the edit touched are reset for
+//! re-parsing. When the next run re-expands their parents, produced children
+//! are matched against the surviving ones by span and context — equal
+//! children keep their identity, their status, and their whole subtree. An
+//! edit inside one function body re-parses that function; every other
+//! function's subtree is carried over untouched.
+//!
 //! # The moving parts
 //!
 //! | Piece | Role |
@@ -114,6 +125,7 @@ mod node;
 mod outcome;
 mod pass;
 mod schedule;
+mod session;
 mod span;
 mod status;
 mod tree;
@@ -126,6 +138,7 @@ pub use node::NodeId;
 pub use outcome::Outcome;
 pub use pass::Pass;
 pub use schedule::Schedule;
+pub use session::{Edit, Session};
 pub use span::Span;
 pub use status::{Status, StatusCounts};
 pub use tree::ParseTree;

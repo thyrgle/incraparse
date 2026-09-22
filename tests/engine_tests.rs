@@ -9,7 +9,7 @@ fn root(source: &str) -> ParseTree<()> {
     ParseTree::new(0, Span::new(0, source.len(), 0), ())
 }
 
-fn run_rounds<C: Clone + Send + 'static>(
+fn run_rounds<C: Clone + PartialEq + Send + 'static>(
     schedule: Schedule<C>,
     source: &str,
     tree: &mut ParseTree<C>,

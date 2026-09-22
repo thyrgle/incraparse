@@ -62,9 +62,9 @@ impl<C> ParseTree<C> {
         self.root
     }
 
-    /// Total number of nodes in the tree.
+    /// Total number of live nodes in the tree.
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.iter().filter(|node| node.alive).count()
     }
 
     /// Returns `true` if the tree has no nodes at all.
@@ -144,9 +144,16 @@ impl<C> ParseTree<C> {
         &self.nodes[id.0].children
     }
 
-    /// An iterator over every node id in the tree, in creation order.
+    /// An iterator over every live node id in the tree, in creation order.
+    ///
+    /// Nodes dropped by an incremental re-parse (see [`edit`](Self::edit))
+    /// are not yielded; their ids remain reserved and must not be reused.
     pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
-        (0..self.nodes.len()).map(NodeId)
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.alive)
+            .map(|(index, _)| NodeId(index))
     }
 
     /// The slice of `source` covered by `id`.
@@ -159,10 +166,44 @@ impl<C> ParseTree<C> {
         &source[self.span(id).to_range()]
     }
 
-    /// Per-status node counts for the whole tree.
+    /// Applies a text edit in place: every live span is remapped into the
+    /// new coordinates and tagged with a fresh source revision, and every
+    /// node the edit could have changed is reset to
+    /// [`Unparsed`](Status::Unparsed) for re-parsing on the next run.
+    ///
+    /// A touched node restarts at its home round (the round whose pass first
+    /// processed it), with its failure history cleared — edited text gets a
+    /// genuinely fresh chance at every pass, including ones it had
+    /// previously exhausted.
+    ///
+    /// Touched nodes keep their children attached: the next run re-expands
+    /// their parents and matches the new children against the old ones, so
+    /// unchanged regions are reused instead of re-parsed (see the
+    /// [`Session`](crate::Session) docs).
+    pub fn edit(&mut self, edit: crate::session::Edit) {
+        let new_rev = self.rev + 1;
+        self.rev = new_rev;
+        for node in &mut self.nodes {
+            if !node.alive {
+                continue;
+            }
+            let touched = edit.touches(&node.span);
+            node.span = crate::session::map_span(node.span, &edit, new_rev);
+            if touched {
+                node.status = Status::Unparsed;
+                node.depth -= node.attempts;
+                node.attempts = 0;
+            }
+        }
+    }
+
+    /// Per-status node counts for the whole tree (live nodes only).
     pub fn status_counts(&self) -> StatusCounts {
         let mut counts = StatusCounts::default();
         for node in &self.nodes {
+            if !node.alive {
+                continue;
+            }
             match node.status {
                 Status::Unparsed => counts.unparsed += 1,
                 Status::Expanded => counts.expanded += 1,
@@ -182,7 +223,8 @@ impl<C> ParseTree<C> {
     /// Panics if `id` is not part of this tree.
     pub fn is_pending(&self, id: NodeId, max_rounds: usize) -> bool {
         let node = &self.nodes[id.0];
-        node.status.is_unparsed() || (node.status.is_failed() && node.depth < max_rounds)
+        node.alive
+            && (node.status.is_unparsed() || (node.status.is_failed() && node.depth < max_rounds))
     }
 
     /// Returns `true` if `id` and all of its descendants have no work left
@@ -206,7 +248,7 @@ impl<C> ParseTree<C> {
             .collect()
     }
 
-    /// Collects the jobs for all nodes ready to be processed in `round`.
+    /// Collects the jobs for all live nodes ready to be processed in `round`.
     pub(crate) fn ready_jobs(&self, round: usize) -> Vec<Job<C>>
     where
         C: Clone,
@@ -215,7 +257,9 @@ impl<C> ParseTree<C> {
             .iter()
             .enumerate()
             .filter(|(_, node)| {
-                node.depth == round && matches!(node.status, Status::Unparsed | Status::Failed)
+                node.alive
+                    && node.depth == round
+                    && matches!(node.status, Status::Unparsed | Status::Failed)
             })
             .map(|(index, node)| Job {
                 node: NodeId(index),
@@ -231,25 +275,37 @@ impl<C> ParseTree<C> {
     /// Child spans must live on the same source revision as their parent and
     /// be contained in it; when `enforce_shrink` is set they must also be
     /// strictly smaller. Violating outcomes mark the node failed.
+    ///
+    /// When the node already has children (it was invalidated by an edit and
+    /// is being re-expanded), each produced child is matched against the
+    /// existing children by span and context: a match is *reused* — same
+    /// node id, status, and subtree — and unmatched old children are dropped
+    /// along with their subtrees.
     pub(crate) fn apply(
         &mut self,
         id: NodeId,
         outcome: Outcome<C>,
         round: usize,
         enforce_shrink: bool,
-    ) -> Applied {
+    ) -> Applied
+    where
+        C: PartialEq,
+    {
         let parent_span = self.nodes[id.0].span;
         match outcome {
             Outcome::Done => {
+                self.detach_children(id);
                 self.set_status(id, Status::Done);
                 Applied::Done
             }
             Outcome::Failed => {
+                self.detach_children(id);
                 self.mark_failed(id, round);
                 Applied::Failed
             }
             Outcome::Expand(children) => {
                 if children.is_empty() {
+                    self.detach_children(id);
                     self.set_status(id, Status::Done);
                     return Applied::Done;
                 }
@@ -259,12 +315,33 @@ impl<C> ParseTree<C> {
                         && (!enforce_shrink || span.len() < parent_span.len())
                 });
                 if !valid {
+                    self.detach_children(id);
                     self.mark_failed(id, round);
                     return Applied::Failed;
                 }
                 let next_depth = round + 1;
+
+                let old_children = std::mem::take(&mut self.nodes[id.0].children);
+                let mut reused = vec![None; children.len()];
+                let mut orphans = old_children;
+                for (slot, (span, ctx)) in children.iter().enumerate() {
+                    if let Some(position) = orphans.iter().position(|child| {
+                        let node = &self.nodes[child.0];
+                        node.alive && node.span == *span && node.ctx == *ctx
+                    }) {
+                        reused[slot] = Some(orphans.remove(position));
+                    }
+                }
+                for orphan in &orphans {
+                    self.detach_recursive(*orphan);
+                }
+
                 let mut child_ids = Vec::with_capacity(children.len());
-                for (span, ctx) in children {
+                for (slot, (span, ctx)) in children.into_iter().enumerate() {
+                    if let Some(kept) = reused[slot] {
+                        child_ids.push(kept);
+                        continue;
+                    }
                     let child_index = self.nodes.len();
                     child_ids.push(NodeId(child_index));
                     self.nodes.push(Node {
@@ -275,13 +352,29 @@ impl<C> ParseTree<C> {
                         parent: Some(id),
                         children: Vec::new(),
                         attempts: 0,
+                        alive: true,
                     });
                 }
                 let node = &mut self.nodes[id.0];
                 node.status = Status::Expanded;
-                node.children.extend(child_ids);
+                node.children = child_ids;
                 Applied::Expanded
             }
+        }
+    }
+
+    fn detach_children(&mut self, id: NodeId) {
+        let children = std::mem::take(&mut self.nodes[id.0].children);
+        for child in children {
+            self.detach_recursive(child);
+        }
+    }
+
+    fn detach_recursive(&mut self, id: NodeId) {
+        self.nodes[id.0].alive = false;
+        let children = std::mem::take(&mut self.nodes[id.0].children);
+        for child in children {
+            self.detach_recursive(child);
         }
     }
 

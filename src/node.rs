@@ -30,6 +30,9 @@ pub(crate) struct Node<C> {
     pub children: Vec<NodeId>,
     /// How many passes have tried and failed to parse this node.
     pub attempts: usize,
+    /// `false` once the node has been dropped by an incremental re-parse;
+    /// dead nodes are unreachable from the root and skipped by every query.
+    pub alive: bool,
 }
 
 impl<C> Node<C> {
@@ -42,6 +45,7 @@ impl<C> Node<C> {
             parent: None,
             children: Vec::new(),
             attempts: 0,
+            alive: true,
         }
     }
 }

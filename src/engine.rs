@@ -131,6 +131,12 @@ impl<C> Engine<C> {
     /// batch keeps the tree consistent and a later call resumes where this
     /// one stopped.
     ///
+    /// When re-expanding a node that already has children (after
+    /// [`ParseTree::edit`]), produced children are matched against the
+    /// existing ones by span and context — equal children are reused
+    /// whole, so only the edited regions are re-parsed. This is why `C`
+    /// must implement `PartialEq`.
+    ///
     /// A run over an already-settled tree reports `reached_fixpoint` without
     /// doing any work. A run over a non-settled tree with an empty schedule
     /// does no work and reports neither fixpoint nor cancellation — the
@@ -143,7 +149,7 @@ impl<C> Engine<C> {
         cancel: &CancelToken,
     ) -> RunReport
     where
-        C: Clone + Send + 'static,
+        C: Clone + PartialEq + Send + 'static,
         E: Executor,
     {
         let mut report = RunReport::default();
