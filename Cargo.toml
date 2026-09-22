@@ -1,15 +1,3 @@
-[package]
-name = "incraparse"
-version = "0.1.0"
-edition = "2021"
-description = "A combinator-agnostic, multi-pass fixpoint parsing engine: run schedules of parser passes over a growing parse tree."
-license = "MIT OR Apache-2.0"
-keywords = ["parser", "incremental", "lsp", "combinators", "fixpoint"]
-categories = ["parsing", "development-tools"]
-
-[dependencies]
-rayon = { version = "1.10", optional = true }
-
-[features]
-default = []
-parallel = ["dep:rayon"]
+[workspace]
+resolver = "2"
+members = ["crates/incraparse"]
