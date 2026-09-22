@@ -70,8 +70,10 @@ mod diagnostics;
 mod document;
 mod encoding;
 mod line_index;
+mod server;
 
 pub use diagnostics::{diagnostics, DiagnosticsOptions, FailedNode};
 pub use document::Document;
 pub use encoding::PositionEncoding;
 pub use line_index::LineIndex;
+pub use server::{serve, serve_on, Documents, Language};

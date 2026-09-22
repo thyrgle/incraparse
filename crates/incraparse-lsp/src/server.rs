@@ -1,0 +1,328 @@
+//! The `serve()` skeleton: implement one trait, get a complete server loop.
+//!
+//! Everything protocol-shaped lives here — the `initialize` handshake,
+//! capability advertisement, document bookkeeping, change translation,
+//! diagnostics publishing, `documentSymbol` dispatch, and the
+//! [`Connection`]-by-value discipline that makes shutdown unable to
+//! deadlock. Users describe *what* to parse and *how it fails*; this module
+//! owns *how the server behaves*.
+
+use std::collections::HashMap;
+use std::error::Error;
+
+use incraparse::{CancelToken, Engine};
+use lsp_server::Connection;
+use lsp_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, OneOf,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
+};
+
+use crate::diagnostics::{self, DiagnosticsOptions, FailedNode};
+use crate::document::Document;
+use crate::encoding::PositionEncoding;
+
+/// The document store behind a running server: URI -> parsed document.
+#[allow(clippy::mutable_key_type)]
+pub type Documents<C> = HashMap<lsp_types::Uri, Document<C>>;
+
+/// The language-specific half of a server.
+///
+/// Implement this and hand it to [`serve`] (stdio) or [`serve_on`] (any
+/// transport). Everything else — lifecycle, change bookkeeping, diagnostics
+/// publishing, symbol dispatch — is the skeleton's job.
+///
+/// # Examples
+///
+/// A minimal server that parses files and reports nothing:
+///
+/// ```
+/// use incraparse::{Engine, Outcome, Pass, Schedule, Span};
+/// use incraparse_lsp::{Document, FailedNode, Language, serve};
+/// use lsp_types::Diagnostic;
+///
+/// #[derive(Clone, Debug, PartialEq, Eq)]
+/// enum Ctx {
+///     File,
+/// }
+///
+/// struct Accept;
+/// impl Pass for Accept {
+///     type Ctx = Ctx;
+///     fn parse(&self, _source: &str, _span: Span, _ctx: &Ctx) -> Outcome<Ctx> {
+///         Outcome::Done
+///     }
+/// }
+///
+/// struct MyLang {
+///     engine: Engine<Ctx>,
+/// }
+///
+/// impl MyLang {
+///     fn new() -> Self {
+///         let mut schedule = Schedule::new();
+///         schedule.push(Accept);
+///         Self {
+///             engine: Engine::new(schedule),
+///         }
+///     }
+/// }
+///
+/// impl Language<Ctx> for MyLang {
+///     fn engine(&self) -> &Engine<Ctx> {
+///         &self.engine
+///     }
+///
+///     fn root_ctx(&self) -> Ctx {
+///         Ctx::File
+///     }
+///
+///     fn diagnostic(&self, _doc: &Document<Ctx>, _node: FailedNode<'_, Ctx>) -> Option<Diagnostic> {
+///         None
+///     }
+/// }
+///
+/// # fn untouched() {
+/// // serve(MyLang::new())?;
+/// # }
+/// ```
+pub trait Language<C: Clone + PartialEq + Send + 'static>: Send + Sync + 'static {
+    /// Whether to advertise and answer `textDocument/documentSymbol`.
+    /// Defaults to `false`; flip to `true` and override [`symbols`](Self::symbols).
+    const SUPPORTS_SYMBOLS: bool = false;
+
+    /// The pass schedule run over every document.
+    fn engine(&self) -> &Engine<C>;
+
+    /// Context for a freshly opened document's root region.
+    fn root_ctx(&self) -> C;
+
+    /// The position encoding to negotiate with the client.
+    /// Defaults to UTF-16, the LSP default and what most clients use.
+    fn encoding(&self) -> PositionEncoding {
+        PositionEncoding::Utf16
+    }
+
+    /// Renders the diagnostic for a failing region, or `None` to stay
+    /// silent (e.g. for contexts whose failure is expected).
+    ///
+    /// `doc` gives access to the document's text, URI, and version; the
+    /// returned diagnostic's range may be left empty, in which case it is
+    /// filled in from the node's span.
+    fn diagnostic(
+        &self,
+        doc: &Document<C>,
+        node: FailedNode<'_, C>,
+    ) -> Option<lsp_types::Diagnostic>;
+
+    /// The document symbols for the outline view. Only consulted when
+    /// [`SUPPORTS_SYMBOLS`](Self::SUPPORTS_SYMBOLS) is `true`.
+    fn symbols(&self, doc: &Document<C>) -> Vec<lsp_types::DocumentSymbol> {
+        let _ = doc;
+        Vec::new()
+    }
+}
+
+/// The server capabilities advertised for `language`.
+pub(crate) fn capabilities<C, L>(language: &L) -> lsp_types::ServerCapabilities
+where
+    C: Clone + PartialEq + Send + 'static,
+    L: Language<C>,
+{
+    lsp_types::ServerCapabilities {
+        position_encoding: Some(language.encoding().capability()),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(
+            TextDocumentSyncKind::INCREMENTAL,
+        )),
+        document_symbol_provider: Some(OneOf::Left(L::SUPPORTS_SYMBOLS)),
+        ..Default::default()
+    }
+}
+
+fn publish<C, L>(
+    connection: &Connection,
+    language: &L,
+    doc: &Document<C>,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    C: Clone + PartialEq + Send + 'static,
+    L: Language<C>,
+{
+    let diags = diagnostics::diagnostics(doc, DiagnosticsOptions::default(), |node| {
+        language.diagnostic(doc, node)
+    });
+    let params = lsp_types::PublishDiagnosticsParams {
+        uri: doc.uri().clone(),
+        diagnostics: diags,
+        version: Some(doc.version()),
+    };
+    connection.sender.send(lsp_server::Message::Notification(
+        lsp_server::Notification::new("textDocument/publishDiagnostics".into(), params),
+    ))?;
+    Ok(())
+}
+
+/// Runs a full server lifecycle over an existing `connection`:
+/// the `initialize` handshake, then the message loop until `exit`.
+///
+/// Use this instead of [`serve`] when you own the transport (TCP, an
+/// in-process [`Connection::memory`] pair, tests). The caller is responsible
+/// for any I/O threads; `serve_on` returns once the client sends `shutdown`
+/// + `exit`.
+#[allow(clippy::mutable_key_type)]
+pub fn serve_on<C, L>(
+    connection: Connection,
+    language: L,
+    documents: Documents<C>,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    C: Clone + PartialEq + Send + 'static,
+    L: Language<C>,
+{
+    #[allow(clippy::mutable_key_type)]
+    let mut documents = documents;
+    let _initialization_params =
+        connection.initialize(serde_json::to_value(capabilities(&language))?)?;
+
+    run_loop(connection, language, &mut documents)
+}
+
+#[allow(clippy::mutable_key_type)]
+fn run_loop<C, L>(
+    connection: Connection,
+    language: L,
+    documents: &mut Documents<C>,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    C: Clone + PartialEq + Send + 'static,
+    L: Language<C>,
+{
+    for msg in &connection.receiver {
+        match msg {
+            lsp_server::Message::Request(req) => {
+                if connection.handle_shutdown(&req)? {
+                    break;
+                }
+                match req.method.as_str() {
+                    "textDocument/documentSymbol" if L::SUPPORTS_SYMBOLS => {
+                        let params: lsp_types::DocumentSymbolParams =
+                            serde_json::from_value(req.params)?;
+                        let symbols = documents
+                            .get(&params.text_document.uri)
+                            .map(|doc| language.symbols(doc))
+                            .unwrap_or_default();
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_ok(req.id, symbols),
+                        ))?;
+                    }
+                    _ => {
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_err(
+                                req.id,
+                                lsp_server::ErrorCode::MethodNotFound as i32,
+                                "method not supported".into(),
+                            ),
+                        ))?;
+                    }
+                }
+            }
+            lsp_server::Message::Notification(notification) => {
+                let lsp_server::Notification { method, params, .. } = notification;
+                match method.as_str() {
+                    "textDocument/didOpen" => {
+                        let params: DidOpenTextDocumentParams = serde_json::from_value(params)?;
+                        let item = params.text_document;
+                        let mut doc = Document::open(
+                            item.uri.clone(),
+                            item.version,
+                            item.text,
+                            language.encoding(),
+                            language.root_ctx(),
+                        );
+                        doc.apply_changes(
+                            language.engine(),
+                            item.version,
+                            &[],
+                            &incraparse::SerialExecutor,
+                            &CancelToken::new(),
+                        );
+                        publish(&connection, &language, &doc)?;
+                        documents.insert(item.uri, doc);
+                    }
+                    "textDocument/didChange" => {
+                        let params: DidChangeTextDocumentParams = serde_json::from_value(params)?;
+                        let uri = params.text_document.uri.clone();
+                        if let Some(doc) = documents.get_mut(&uri) {
+                            doc.apply_changes(
+                                language.engine(),
+                                params.text_document.version,
+                                &params.content_changes,
+                                &incraparse::SerialExecutor,
+                                &CancelToken::new(),
+                            );
+                            publish(&connection, &language, doc)?;
+                        }
+                    }
+                    "textDocument/didClose" => {
+                        let params: DidCloseTextDocumentParams = serde_json::from_value(params)?;
+                        let uri = params.text_document.uri;
+                        documents.remove(&uri);
+                        connection.sender.send(lsp_server::Message::Notification(
+                            lsp_server::Notification::new(
+                                "textDocument/publishDiagnostics".into(),
+                                lsp_types::PublishDiagnosticsParams {
+                                    uri,
+                                    diagnostics: Vec::new(),
+                                    version: None,
+                                },
+                            ),
+                        ))?;
+                    }
+                    _ => {}
+                }
+            }
+            lsp_server::Message::Response(_) => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Runs a language server on stdio until the client sends `shutdown` +
+/// `exit`.
+///
+/// This is the whole integration point:
+///
+/// ```no_run
+/// # use incraparse::{Engine, Outcome, Pass, Schedule, Span};
+/// # use incraparse_lsp::{Document, FailedNode, Language};
+/// # use lsp_types::Diagnostic;
+/// # #[derive(Clone, Debug, PartialEq, Eq)]
+/// # enum Ctx { File }
+/// # struct Accept;
+/// # impl Pass for Accept {
+/// #     type Ctx = Ctx;
+/// #     fn parse(&self, _source: &str, _span: Span, _ctx: &Ctx) -> Outcome<Ctx> {
+/// #         Outcome::Done
+/// #     }
+/// # }
+/// # struct MyLang { engine: Engine<Ctx> }
+/// # impl Language<Ctx> for MyLang {
+/// #     fn engine(&self) -> &Engine<Ctx> { &self.engine }
+/// #     fn root_ctx(&self) -> Ctx { Ctx::File }
+/// #     fn diagnostic(&self, _doc: &Document<Ctx>, _node: FailedNode<'_, Ctx>) -> Option<Diagnostic> { None }
+/// # }
+/// # fn build_engine() -> Engine<Ctx> { unimplemented!() }
+/// fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///     incraparse_lsp::serve(MyLang { engine: build_engine() })
+/// }
+/// ```
+pub fn serve<C, L>(language: L) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    C: Clone + PartialEq + Send + 'static,
+    L: Language<C>,
+{
+    let (connection, io_threads) = Connection::stdio();
+    serve_on(connection, language, Documents::new())?;
+    io_threads.join()?;
+    Ok(())
+}

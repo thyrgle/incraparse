@@ -150,21 +150,20 @@ per edit instead of the whole file).
 
 ## Language servers
 
-`incraparse-lsp` bridges the engine to the Language Server Protocol without
-picking a server framework for you (only `lsp-types` — no tokio, no I/O):
+`incraparse-lsp` bridges the engine to the Language Server Protocol. Two
+layers:
 
-- **Position encodings**: LSP positions are `(line, character)` in UTF-8,
-  UTF-16, or UTF-32 code units; spans are byte offsets. `LineIndex` +
-  `PositionEncoding` convert both ways, correctly, across multibyte text,
-  negotiating the encoding via the `positionEncoding` capability.
-- **`Document<C>`**: one open file — text, `Session`, client version.
-  Feed it the `didChange` payload; each change event is translated into a
-  byte-range `Edit` (so unchanged regions are reused) and the engine runs
-  once per batch, synchronously, on whatever thread you choose.
-- **Diagnostics**: `diagnostics(&doc, options, hook)` walks the settled tree
-  and lets your hook turn failing regions into publishable `Diagnostic`s
-  with encoding-correct ranges — including after a *cancelled* run, which is
-  the coarse-structure-survives-errors payoff.
+- **`serve()` + `Language`** — implement one trait (engine, root context,
+  diagnostics hook, optional symbols) and get a complete server: initialize,
+  document bookkeeping, incremental change translation, diagnostics
+  publishing, symbol dispatch, and a structurally deadlock-free shutdown.
+  Runs on stdio via `lsp-server`; `serve_on()` accepts any connection you
+  own.
+- **Framework-agnostic pieces** — `LineIndex`/`PositionEncoding` (byte ↔
+  UTF-8/16/32 positions), `Document<C>` (didChange events → byte `Edit`s →
+  one engine run, with tree reuse), and `diagnostics()` — for when you'd
+  rather write the loop yourself (or use another server framework; only the
+  `serve()` layer needs `lsp-server`).
 
 `crates/incraparse-lsp/examples/mini_lang_server.rs` is a complete small
 server (diagnostics + document symbols) with an end-to-end stdio smoke test

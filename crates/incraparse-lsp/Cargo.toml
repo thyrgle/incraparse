@@ -9,8 +9,10 @@ categories = ["parsing", "development-tools"]
 
 [dependencies]
 incraparse = { path = "../incraparse", version = "0.1.0" }
+lsp-server = "0.10"
 lsp-types = "0.97"
+serde_json = "1"
 
 [dev-dependencies]
-lsp-server = "0.10"
+serde = "1"
 serde_json = "1"

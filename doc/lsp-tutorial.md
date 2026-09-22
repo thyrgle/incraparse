@@ -62,9 +62,6 @@ edition = "2021"
 incraparse = "0.1"
 incraparse-lsp = "0.1"
 lsp-types = "0.97"
-lsp-server = "0.10"
-serde_json = "1"
-serde = "1"
 ```
 
 ## 2. Parsing MiniLang in passes
@@ -91,16 +88,9 @@ Create `src/main.rs` and start with the context type and shared scanning
 helpers:
 
 ```rust
-use std::collections::HashMap;
-use std::error::Error;
-
-use incraparse::{CancelToken, Engine, Outcome, Pass, Schedule, SerialExecutor, Span};
-use incraparse_lsp::{diagnostics, DiagnosticsOptions, Document, PositionEncoding};
-use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, OneOf, PublishDiagnosticsParams,
-};
-use lsp_server::{Connection, Message, Notification};
+use incraparse::{Engine, Outcome, Pass, Schedule, Span};
+use incraparse_lsp::{Document, FailedNode, Language};
+use lsp_types::{Diagnostic, DocumentSymbol};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LangCtx {
@@ -305,220 +295,130 @@ impl Pass for ReturnPass {
 }
 ```
 
-## 3. The LSP server loop
+## 3. The server: implement `Language`, call `serve()`
 
-Editors and servers speak JSON-RPC over stdio. The lifecycle your loop must
-handle:
+Editors and servers speak JSON-RPC over stdio. A server has to handle:
 
-1. `initialize` — you advertise capabilities (we speak UTF-16 positions,
+1. `initialize` — advertise capabilities (we speak UTF-16 positions,
    incremental text sync, and `documentSymbol`),
 2. `initialized`, then a stream of notifications:
    `textDocument/didOpen` / `…/didChange` / `…/didClose`,
 3. requests like `textDocument/documentSymbol`,
 4. `shutdown` + `exit` to end.
 
-`incraparse-lsp` does the fiddly parts: `Document` splices text edits,
-converts LSP change events into byte-range `Edit`s (so the parse tree
-**reuses** every region the edit didn't touch), and `diagnostics()` walks
-the tree for failing regions with editor-correct ranges.
-
-Add the engine, the diagnostics publisher, and the symbol provider:
+`incraparse-lsp`'s skeleton owns *all of that*. You describe your language —
+the pass schedule, the root context, how failing regions become diagnostics,
+how the tree becomes outline symbols — by implementing one trait, and hand
+it to `serve()`:
 
 ```rust
-fn make_engine() -> Engine<LangCtx> {
-    let mut schedule = Schedule::new();
-    schedule.push(FunctionsPass); // round 0
-    schedule.push(BodyPass); // round 1
-    schedule.push(ReturnPass); // round 2
-    Engine::new(schedule)
-}
-
-type Doc = Document<LangCtx>;
-
-fn publish_diagnostics(
-    connection: &Connection,
-    doc: &Doc,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let diags = diagnostics(doc, DiagnosticsOptions::default(), |node| match node.ctx {
-        LangCtx::Return { function } => Some(lsp_types::Diagnostic {
-            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-            message: format!("`{function}`: this `return` could not be parsed"),
-            source: Some("minilang".into()),
-            ..lsp_types::Diagnostic::default()
-        }),
-        _ => None,
-    });
-
-    let params = PublishDiagnosticsParams {
-        uri: doc.uri().clone(),
-        diagnostics: diags,
-        version: Some(doc.version()),
-    };
-    connection
-        .sender
-        .send(Message::Notification(lsp_server::Notification::new(
-            "textDocument/publishDiagnostics".into(),
-            params,
-        )))?;
-    Ok(())
-}
-
-fn document_symbols(doc: &Doc) -> Vec<DocumentSymbol> {
-    let tree = doc.session().tree();
-    let mut symbols = Vec::new();
-    for id in tree.nodes() {
-        if let LangCtx::Function { name, params } = tree.ctx(id) {
-            let range = doc.range(tree.span(id));
-            #[allow(deprecated)]
-            symbols.push(DocumentSymbol {
-                name: name.clone(),
-                detail: Some(format!("({})", params.join(", "))),
-                kind: lsp_types::SymbolKind::FUNCTION,
-                range,
-                selection_range: range,
-                children: None,
-                tags: None,
-                deprecated: None,
-            });
-        }
-    }
-    symbols
-}
-```
-
-The main loop itself. Note that `main_loop` takes the `Connection` **by
-value** — after `exit`, `io_threads.join()` can only return once the
-connection's writer side has been dropped, so holding it across `join()`
-deadlocks the shutdown:
-
-```rust
-type Documents = HashMap<lsp_types::Uri, Doc>;
-
-#[allow(clippy::mutable_key_type)]
-fn main_loop(
-    connection: Connection,
+/// MiniLang's entire server definition.
+struct MiniLang {
     engine: Engine<LangCtx>,
-    documents: Documents,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut documents = documents;
+}
 
-    for msg in &connection.receiver {
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    break;
-                }
-                match req.method.as_str() {
-                    "textDocument/documentSymbol" => {
-                        let params: DocumentSymbolParams = serde_json::from_value(req.params)?;
-                        let symbols = documents
-                            .get(&params.text_document.uri)
-                            .map(document_symbols)
-                            .unwrap_or_default();
-                        connection
-                            .sender
-                            .send(Message::Response(lsp_server::Response::new_ok(
-                                req.id, symbols,
-                            )))?;
-                    }
-                    _ => {
-                        connection
-                            .sender
-                            .send(Message::Response(lsp_server::Response::new_err(
-                                req.id,
-                                lsp_server::ErrorCode::MethodNotFound as i32,
-                                "method not supported".into(),
-                            )))?;
-                    }
-                }
-            }
-            Message::Notification(notification) => {
-                let Notification { method, params, .. } = notification;
-                match method.as_str() {
-                    "textDocument/didOpen" => {
-                        let params: DidOpenTextDocumentParams = serde_json::from_value(params)?;
-                        let item = params.text_document;
-                        let mut doc = Doc::open(
-                            item.uri.clone(),
-                            item.version,
-                            item.text,
-                            PositionEncoding::Utf16,
-                            LangCtx::File,
-                        );
-                        doc.apply_changes(
-                            &engine,
-                            item.version,
-                            &[], // nothing to apply on open
-                            &SerialExecutor,
-                            &CancelToken::new(),
-                        );
-                        publish_diagnostics(&connection, &doc)?;
-                        documents.insert(item.uri, doc);
-                    }
-                    "textDocument/didChange" => {
-                        let params: DidChangeTextDocumentParams = serde_json::from_value(params)?;
-                        let uri = params.text_document.uri.clone();
-                        if let Some(doc) = documents.get_mut(&uri) {
-                            doc.apply_changes(
-                                &engine,
-                                params.text_document.version,
-                                &params.content_changes,
-                                &SerialExecutor,
-                                &CancelToken::new(),
-                            );
-                            publish_diagnostics(&connection, doc)?;
-                        }
-                    }
-                    "textDocument/didClose" => {
-                        let params: DidCloseTextDocumentParams = serde_json::from_value(params)?;
-                        let uri = params.text_document.uri;
-                        documents.remove(&uri);
-                        connection
-                            .sender
-                            .send(Message::Notification(lsp_server::Notification::new(
-                                "textDocument/publishDiagnostics".into(),
-                                PublishDiagnosticsParams {
-                                    uri,
-                                    diagnostics: Vec::new(),
-                                    version: None,
-                                },
-                            )))?;
-                    }
-                    _ => {}
-                }
-            }
-            Message::Response(_) => {}
+impl MiniLang {
+    fn new() -> Self {
+        let mut schedule = Schedule::new();
+        schedule.push(FunctionsPass); // round 0
+        schedule.push(BodyPass); // round 1
+        schedule.push(ReturnPass); // round 2
+        Self {
+            engine: Engine::new(schedule),
+        }
+    }
+}
+
+impl Language<LangCtx> for MiniLang {
+    // Advertise and answer `textDocument/documentSymbol`.
+    const SUPPORTS_SYMBOLS: bool = true;
+
+    fn engine(&self) -> &Engine<LangCtx> {
+        &self.engine
+    }
+
+    fn root_ctx(&self) -> LangCtx {
+        LangCtx::File
+    }
+
+    // How a failing region becomes a squiggle. Returning `None` stays
+    // silent — handy for contexts whose failure is expected.
+    fn diagnostic(
+        &self,
+        _doc: &Document<LangCtx>,
+        node: FailedNode<'_, LangCtx>,
+    ) -> Option<Diagnostic> {
+        match node.ctx {
+            LangCtx::Return { function } => Some(Diagnostic {
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                message: format!("`{function}`: this `return` could not be parsed"),
+                source: Some("minilang".into()),
+                ..Diagnostic::default()
+            }),
+            _ => None,
         }
     }
 
-    Ok(())
+    // The outline view, read straight off the parse tree.
+    fn symbols(&self, doc: &Document<LangCtx>) -> Vec<DocumentSymbol> {
+        let tree = doc.session().tree();
+        let mut symbols = Vec::new();
+        for id in tree.nodes() {
+            if let LangCtx::Function { name, params } = tree.ctx(id) {
+                let range = doc.range(tree.span(id));
+                #[allow(deprecated)]
+                symbols.push(DocumentSymbol {
+                    name: name.clone(),
+                    detail: Some(format!("({})", params.join(", "))),
+                    kind: lsp_types::SymbolKind::FUNCTION,
+                    range,
+                    selection_range: range,
+                    children: None,
+                    tags: None,
+                    deprecated: None,
+                });
+            }
+        }
+        symbols
+    }
 }
 
-fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (connection, io_threads) = Connection::stdio();
-
-    let capabilities = lsp_types::ServerCapabilities {
-        position_encoding: Some(PositionEncoding::Utf16.capability()),
-        text_document_sync: Some(lsp_types::TextDocumentSyncCapability::Kind(
-            lsp_types::TextDocumentSyncKind::INCREMENTAL,
-        )),
-        document_symbol_provider: Some(OneOf::Left(true)),
-        ..Default::default()
-    };
-    let _initialization_params = connection.initialize(serde_json::to_value(capabilities)?)?;
-
-    main_loop(connection, make_engine(), HashMap::new())?;
-    io_threads.join()?;
-    Ok(())
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    incraparse_lsp::serve(MiniLang::new())
 }
 ```
+
+If the diagnostic's `range` is left empty, the skeleton fills it in from the
+node's span (with the negotiated position encoding) — usually you don't
+touch ranges at all.
+
+### What `serve()` does for you
+
+Everything you'd otherwise hand-roll:
+
+- the `initialize` handshake and capability advertisement,
+- the open-document table (URI → text + parse tree + client version),
+- `didChange` translation: each incremental delta becomes a byte-range
+  `incraparse::Edit`, the engine runs once per batch, and the parse tree
+  **reuses** every region the edit didn't touch,
+- `publishDiagnostics` after every batch (and the empty publish on close),
+- `documentSymbol` dispatch, and polite `MethodNotFound` for everything
+  you didn't advertise,
+- the `shutdown`/`exit` handshake.
+
+Two of those hide real sharp edges. The naive shutdown — holding the
+connection while joining the I/O threads — deadlocks, because
+`io_threads.join()` can only return after the connection's writer side is
+dropped. The skeleton's loop owns the `Connection` in a function that
+returns *before* `join()` runs, so the bug is structurally impossible. The
+complete hand-written loop, deadlock trap and all, is preserved in
+[`crates/incraparse-lsp/examples/manual_server.rs`](../crates/incraparse-lsp/examples/manual_server.rs)
+— read it side by side with the trait above to see what the skeleton
+absorbs.
 
 One behavioral note worth internalizing: `didChange` gives you *deltas*
-(we advertised `INCREMENTAL` sync). `apply_changes` translates each delta
-into an `incraparse::Edit`, and the parse tree responds by re-parsing **only
-the edited chain** — everything else is matched by span + context and
-reused. On a 10,000-line file, fixing one typo re-parses one function, not
-the file.
+(we advertised `INCREMENTAL` sync). On a 10,000-line file, fixing one typo
+re-parses one function, not the file.
 
 ## 4. Run it standalone
 
@@ -748,7 +648,7 @@ You should see:
 | Editor says the server "exited with status" or nothing happens | Run the binary alone (step 4) — does it print nothing and wait? Good. Then check the absolute path in `extension.js` / `minilang.lua`. |
 | No diagnostics but no errors either | Is the file extension recognized? VS Code: bottom-right shows the language id (`minilang`); Neovim: `:set ft?` must say `minilang`. |
 | Wrong squiggle positions in files with emoji/accented characters | An encoding mismatch — we negotiated UTF-16; make sure the client didn't force something else. `incraparse-lsp` converts both ways via `LineIndex`. |
-| Server dies on exit / hangs at shutdown | `main_loop` must own the `Connection` (see the note in step 3); `io_threads.join()` must run after it returns. |
+| Server dies on exit / hangs at shutdown | Only possible with a hand-written loop — `serve()` is immune. If you wrote your own: the loop must own the `Connection`, and it must return before `io_threads.join()` (see step 3). |
 | Where are the logs? | VS Code: Output panel → *MiniLang Language Server*. Neovim: `:LspLog`. |
 
 ## 9. Exercises

@@ -1,16 +1,18 @@
-//! A small but complete language server for the mini language, built on the
-//! framework-agnostic `incraparse-lsp` adapter and the sync `lsp-server`
-//! scaffold.
+//! A small but complete language server for the mini language — the
+//! `serve()` edition.
 //!
-//! Demonstrates the whole story:
+//! Everything protocol-shaped (initialize, document bookkeeping, change
+//! translation, diagnostics publishing, symbol dispatch, shutdown) is owned
+//! by [`incraparse_lsp::serve`]; this file is only MiniLang's *content*:
 //!
-//! * `didOpen`/`didChange` -> [`Document::apply_changes`] -> incremental
-//!   re-parse (only edited regions re-run their passes),
-//! * failing regions -> publishable diagnostics,
-//! * `textDocument/documentSymbol` -> function symbols read straight off the
-//!   parse tree, available even while some regions are still broken.
+//! * the three passes that parse `def name(params) { return …; }`,
+//! * how a failing region becomes a diagnostic,
+//! * how the parse tree becomes outline symbols.
 //!
-//! Try it with any LSP client, e.g. VS Code + a launch config pointing at
+//! The equivalent fully hand-written loop lives in
+//! `examples/manual_server.rs` — read them side by side to see what the
+//! skeleton absorbs. Try this server with any LSP client, e.g. VS Code + a
+//! launch config pointing at
 //! `cargo run -p incraparse-lsp --example mini_lang_server`, on a file like:
 //!
 //! ```text
@@ -18,16 +20,11 @@
 //! def bad(x) { return; }
 //! ```
 
-use std::collections::HashMap;
 use std::error::Error;
 
-use incraparse::{CancelToken, Engine, Outcome, Pass, Schedule, SerialExecutor, Span};
-use incraparse_lsp::{diagnostics, DiagnosticsOptions, Document, PositionEncoding};
-use lsp_server::{Connection, Message, Notification};
-use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, OneOf, PublishDiagnosticsParams,
-};
+use incraparse::{Engine, Outcome, Pass, Schedule, Span};
+use incraparse_lsp::{Document, FailedNode, Language};
+use lsp_types::DocumentSymbol;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LangCtx {
@@ -201,188 +198,80 @@ impl Pass for ReturnPass {
             .map(str::trim)
             .unwrap_or("");
         if expr.is_empty() {
-            return Outcome::Failed;
-        }
-        Outcome::Done
-    }
-}
-
-fn make_engine() -> Engine<LangCtx> {
-    let mut schedule = Schedule::new();
-    schedule.push(FunctionsPass);
-    schedule.push(BodyPass);
-    schedule.push(ReturnPass);
-    Engine::new(schedule)
-}
-
-type Doc = Document<LangCtx>;
-
-fn publish_diagnostics(
-    connection: &Connection,
-    doc: &Doc,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let diags = diagnostics(doc, DiagnosticsOptions::default(), |node| match node.ctx {
-        LangCtx::Return { function } => Some(lsp_types::Diagnostic {
-            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-            message: format!("`{function}`: this `return` could not be parsed"),
-            source: Some("incraparse-mini-lang".into()),
-            ..lsp_types::Diagnostic::default()
-        }),
-        _ => None,
-    });
-
-    let params = PublishDiagnosticsParams {
-        uri: doc.uri().clone(),
-        diagnostics: diags,
-        version: Some(doc.version()),
-    };
-    connection
-        .sender
-        .send(Message::Notification(lsp_server::Notification::new(
-            "textDocument/publishDiagnostics".into(),
-            params,
-        )))?;
-    Ok(())
-}
-
-fn document_symbols(doc: &Doc) -> Vec<DocumentSymbol> {
-    let tree = doc.session().tree();
-    let mut symbols = Vec::new();
-    for id in tree.nodes() {
-        if let LangCtx::Function { name, params } = tree.ctx(id) {
-            let range = doc.range(tree.span(id));
-            #[allow(deprecated)]
-            symbols.push(DocumentSymbol {
-                name: name.clone(),
-                detail: Some(format!("({})", params.join(", "))),
-                kind: lsp_types::SymbolKind::FUNCTION,
-                range,
-                selection_range: range,
-                children: None,
-                tags: None,
-                deprecated: None,
-            });
+            Outcome::Failed
+        } else {
+            Outcome::Done
         }
     }
-    symbols
 }
 
-#[allow(clippy::mutable_key_type)]
-fn main_loop(
-    connection: Connection,
+/// MiniLang's entire server definition.
+struct MiniLang {
     engine: Engine<LangCtx>,
-    documents: HashMap<lsp_types::Uri, Doc>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut documents = documents;
-    for msg in &connection.receiver {
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    break;
-                }
-                match req.method.as_str() {
-                    "textDocument/documentSymbol" => {
-                        let params: DocumentSymbolParams = serde_json::from_value(req.params)?;
-                        let symbols = documents
-                            .get(&params.text_document.uri)
-                            .map(document_symbols)
-                            .unwrap_or_default();
-                        connection
-                            .sender
-                            .send(Message::Response(lsp_server::Response::new_ok(
-                                req.id, symbols,
-                            )))?;
-                    }
-                    _ => {
-                        connection.sender.send(Message::Response(
-                            lsp_server::Response::new_err(
-                                req.id,
-                                lsp_server::ErrorCode::MethodNotFound as i32,
-                                "method not supported".into(),
-                            ),
-                        ))?;
-                    }
-                }
-            }
-            Message::Notification(notification) => {
-                let Notification { method, params, .. } = notification;
-                match method.as_str() {
-                    "textDocument/didOpen" => {
-                        let params: DidOpenTextDocumentParams = serde_json::from_value(params)?;
-                        let item = params.text_document;
-                        let mut doc = Doc::open(
-                            item.uri.clone(),
-                            item.version,
-                            item.text,
-                            PositionEncoding::Utf16,
-                            LangCtx::File,
-                        );
-                        doc.apply_changes(
-                            &engine,
-                            item.version,
-                            &[],
-                            &SerialExecutor,
-                            &CancelToken::new(),
-                        );
-                        publish_diagnostics(&connection, &doc)?;
-                        documents.insert(item.uri, doc);
-                    }
-                    "textDocument/didChange" => {
-                        let params: DidChangeTextDocumentParams = serde_json::from_value(params)?;
-                        let uri = params.text_document.uri.clone();
-                        if let Some(doc) = documents.get_mut(&uri) {
-                            doc.apply_changes(
-                                &engine,
-                                params.text_document.version,
-                                &params.content_changes,
-                                &SerialExecutor,
-                                &CancelToken::new(),
-                            );
-                            publish_diagnostics(&connection, doc)?;
-                        }
-                    }
-                    "textDocument/didClose" => {
-                        let params: DidCloseTextDocumentParams = serde_json::from_value(params)?;
-                        let uri = params.text_document.uri;
-                        documents.remove(&uri);
-                        connection.sender.send(Message::Notification(
-                            lsp_server::Notification::new(
-                                "textDocument/publishDiagnostics".into(),
-                                PublishDiagnosticsParams {
-                                    uri,
-                                    diagnostics: Vec::new(),
-                                    version: None,
-                                },
-                            ),
-                        ))?;
-                    }
-                    _ => {}
-                }
-            }
-            Message::Response(_) => {}
+}
+
+impl MiniLang {
+    fn new() -> Self {
+        let mut schedule = Schedule::new();
+        schedule.push(FunctionsPass);
+        schedule.push(BodyPass);
+        schedule.push(ReturnPass);
+        Self {
+            engine: Engine::new(schedule),
+        }
+    }
+}
+
+impl Language<LangCtx> for MiniLang {
+    const SUPPORTS_SYMBOLS: bool = true;
+
+    fn engine(&self) -> &Engine<LangCtx> {
+        &self.engine
+    }
+
+    fn root_ctx(&self) -> LangCtx {
+        LangCtx::File
+    }
+
+    fn diagnostic(
+        &self,
+        _doc: &Document<LangCtx>,
+        node: FailedNode<'_, LangCtx>,
+    ) -> Option<lsp_types::Diagnostic> {
+        match node.ctx {
+            LangCtx::Return { function } => Some(lsp_types::Diagnostic {
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                message: format!("`{function}`: this `return` could not be parsed"),
+                source: Some("minilang".into()),
+                ..lsp_types::Diagnostic::default()
+            }),
+            _ => None,
         }
     }
 
-    Ok(())
+    fn symbols(&self, doc: &Document<LangCtx>) -> Vec<DocumentSymbol> {
+        let tree = doc.session().tree();
+        let mut symbols = Vec::new();
+        for id in tree.nodes() {
+            if let LangCtx::Function { name, params } = tree.ctx(id) {
+                let range = doc.range(tree.span(id));
+                #[allow(deprecated)]
+                symbols.push(DocumentSymbol {
+                    name: name.clone(),
+                    detail: Some(format!("({})", params.join(", "))),
+                    kind: lsp_types::SymbolKind::FUNCTION,
+                    range,
+                    selection_range: range,
+                    children: None,
+                    tags: None,
+                    deprecated: None,
+                });
+            }
+        }
+        symbols
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (connection, io_threads) = Connection::stdio();
-
-    let capabilities = lsp_types::ServerCapabilities {
-        position_encoding: Some(PositionEncoding::Utf16.capability()),
-        text_document_sync: Some(lsp_types::TextDocumentSyncCapability::Kind(
-            lsp_types::TextDocumentSyncKind::INCREMENTAL,
-        )),
-        document_symbol_provider: Some(OneOf::Left(true)),
-        ..Default::default()
-    };
-    let _initialization_params = connection.initialize(serde_json::to_value(capabilities)?)?;
-
-    // `main_loop` takes the `Connection` by value: dropping it closes the
-    // writer channel, which is what lets `io_threads.join()` return after
-    // the `exit` notification.
-    main_loop(connection, make_engine(), HashMap::new())?;
-    io_threads.join()?;
-    Ok(())
+    incraparse_lsp::serve(MiniLang::new())
 }
