@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use incraparse::{
-    CancelToken, Engine, EngineConfig, Executor, Job, NodeId, Outcome, ParseTree, Pass,
-    RunReport, Schedule, SerialExecutor, Span, Status,
+    CancelToken, Engine, EngineConfig, Executor, Job, NodeId, Outcome, ParseTree, Pass, RunReport,
+    Schedule, SerialExecutor, Span, Status,
 };
 
 fn root(source: &str) -> ParseTree<()> {
@@ -216,7 +216,10 @@ fn children_preserve_outcome_order() {
             let rev = span.rev;
             Outcome::Expand(vec![
                 (Span::new(span.start, span.start + third, rev), ()),
-                (Span::new(span.start + third, span.start + 2 * third, rev), ()),
+                (
+                    Span::new(span.start + third, span.start + 2 * third, rev),
+                    (),
+                ),
                 (Span::new(span.start + 2 * third, span.end, rev), ()),
             ])
         }
@@ -295,7 +298,10 @@ fn mid_run_cancellation_stops_between_jobs() {
             let rev = span.rev;
             Outcome::Expand(vec![
                 (Span::new(span.start, span.start + third, rev), ()),
-                (Span::new(span.start + third, span.start + 2 * third, rev), ()),
+                (
+                    Span::new(span.start + third, span.start + 2 * third, rev),
+                    (),
+                ),
                 (Span::new(span.start + 2 * third, span.end, rev), ()),
             ])
         }
@@ -417,10 +423,13 @@ fn executor_contract_returns_prefix_in_order() {
             C: Send + 'static,
             F: Fn(&Job<C>) -> Outcome<C> + Send + Sync,
         {
-            jobs.into_iter().take(2).map(|job| {
-                let outcome = run(&job);
-                (job, outcome)
-            }).collect()
+            jobs.into_iter()
+                .take(2)
+                .map(|job| {
+                    let outcome = run(&job);
+                    (job, outcome)
+                })
+                .collect()
         }
     }
 
@@ -432,7 +441,10 @@ fn executor_contract_returns_prefix_in_order() {
             let rev = span.rev;
             Outcome::Expand(vec![
                 (Span::new(span.start, span.start + third, rev), ()),
-                (Span::new(span.start + third, span.start + 2 * third, rev), ()),
+                (
+                    Span::new(span.start + third, span.start + 2 * third, rev),
+                    (),
+                ),
                 (Span::new(span.start + 2 * third, span.end, rev), ()),
             ])
         }
@@ -484,7 +496,10 @@ mod parallel {
             }
             Outcome::Expand(vec![
                 (Span::new(span.start, span.start + third, rev), ()),
-                (Span::new(span.start + third, span.start + 2 * third, rev), ()),
+                (
+                    Span::new(span.start + third, span.start + 2 * third, rev),
+                    (),
+                ),
                 (Span::new(span.start + 2 * third, span.end, rev), ()),
             ])
         }

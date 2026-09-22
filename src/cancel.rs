@@ -1,7 +1,7 @@
 //! Cooperative cancellation for engine runs.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// A cheap, thread-safe flag for cancelling an engine run.
 ///

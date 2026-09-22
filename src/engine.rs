@@ -131,8 +131,10 @@ impl<C> Engine<C> {
     /// batch keeps the tree consistent and a later call resumes where this
     /// one stopped.
     ///
-    /// A run over an empty schedule (or an already-settled tree) reports
-    /// `reached_fixpoint` without doing any work.
+    /// A run over an already-settled tree reports `reached_fixpoint` without
+    /// doing any work. A run over a non-settled tree with an empty schedule
+    /// does no work and reports neither fixpoint nor cancellation — the
+    /// root simply stays [`Unparsed`](crate::Status::Unparsed).
     pub fn run<E>(
         &self,
         source: &str,

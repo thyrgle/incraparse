@@ -1,7 +1,7 @@
 //! The arena-backed parse tree produced by engine runs.
 
 use crate::job::Job;
-use crate::node::{NodeId, Node};
+use crate::node::{Node, NodeId};
 use crate::outcome::Outcome;
 use crate::span::Span;
 use crate::status::{Status, StatusCounts};
@@ -65,6 +65,15 @@ impl<C> ParseTree<C> {
     /// Total number of nodes in the tree.
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Returns `true` if the tree has no nodes at all.
+    ///
+    /// A freshly constructed tree always contains its root, so this is only
+    /// observable on trees built through interior paths; it exists to pair
+    /// with [`len`](Self::len).
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     /// Returns `true` if the tree contains only the root.

@@ -197,7 +197,12 @@ impl Pass for ReturnPass {
     }
 }
 
-fn dump<C: std::fmt::Debug>(tree: &ParseTree<C>, source: &str, id: incraparse::NodeId, depth: usize) {
+fn dump<C: std::fmt::Debug>(
+    tree: &ParseTree<C>,
+    source: &str,
+    id: incraparse::NodeId,
+    depth: usize,
+) {
     let indent = "  ".repeat(depth);
     let text = tree.text(source, id).replace('\n', "\\n");
     let text = if text.len() > 40 {
