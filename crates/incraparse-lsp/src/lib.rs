@@ -49,8 +49,9 @@
 //! // The client edits "héllo" -> "héy": a same-length replace at byte 3.
 //! // Translate the client's change events into `Edit`s via
 //! // `Document::apply_changes`, then inspect the report:
+//! let text = doc.text().to_string();
 //! let report = engine.run(
-//!     doc.text(),
+//!     &text,
 //!     doc.session_mut().tree_mut(),
 //!     &SerialExecutor,
 //!     &incraparse::CancelToken::new(),
