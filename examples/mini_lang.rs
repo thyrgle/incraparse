@@ -15,7 +15,8 @@
 //! Run with `cargo run --example mini_lang`.
 
 use incraparse::{
-    CancelToken, Engine, Outcome, ParseTree, Pass, Schedule, SerialExecutor, Span, Status,
+    CancelToken, Edit, Engine, Outcome, ParseTree, Pass, Schedule, SerialExecutor, Session, Span,
+    Status,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,39 +224,109 @@ fn dump<C: std::fmt::Debug>(
     }
 }
 
-fn main() {
-    let source = r#"
-def add(a, b) { return a + b; }
-def bad(x) { return; }
-def noise( { return broken;
-def zero() { return 0; }
-"#;
-
+fn make_engine() -> Engine<LangCtx> {
     let mut schedule = Schedule::new();
     schedule.push(FunctionsPass);
     schedule.push(BodyPass);
     schedule.push(ReturnPass);
+    Engine::new(schedule)
+}
 
-    let engine = Engine::new(schedule);
-    let mut tree: ParseTree<LangCtx> =
-        ParseTree::new(0, Span::new(0, source.len(), 0), LangCtx::File);
+fn function_ids(tree: &ParseTree<LangCtx>) -> Vec<(String, incraparse::NodeId)> {
+    tree.nodes()
+        .filter_map(|id| match tree.ctx(id) {
+            LangCtx::Function { name, .. } => Some((name.clone(), id)),
+            _ => None,
+        })
+        .collect()
+}
 
-    let report = engine.run(source, &mut tree, &SerialExecutor, &CancelToken::new());
+fn return_of(tree: &ParseTree<LangCtx>, function: &str) -> Option<incraparse::NodeId> {
+    tree.nodes()
+        .find(|id| matches!(tree.ctx(*id), LangCtx::Return { function: f } if f == function))
+}
 
-    println!("report: {report:?}");
-    println!("counts: {:?}\n", tree.status_counts());
-    dump(&tree, source, tree.root(), 0);
+fn main() {
+    let mut source = r#"
+def add(a, b) { return a + b; }
+def bad(x) { return; }
+def noise( { return broken;
+def zero() { return 0; }
+"#
+    .to_string();
 
-    let statuses: Vec<Status> = tree.nodes().map(|id| tree.status(id)).collect();
+    let engine = make_engine();
+    let mut session: Session<LangCtx> =
+        Session::new(0, Span::new(0, source.len(), 0), LangCtx::File);
+
+    let report = session.run(&engine, &source, &SerialExecutor, &CancelToken::new());
+    println!("initial run: {report:?}");
+    println!("counts: {:?}\n", session.tree().status_counts());
+    dump(session.tree(), &source, session.tree().root(), 0);
+
+    let bad_return = return_of(session.tree(), "bad").expect("`bad` has a return");
+    assert_eq!(session.tree().status(bad_return), Status::Failed);
     assert!(
-        statuses.contains(&Status::Failed),
-        "the `bad` function's empty return should fail"
-    );
-    assert!(
-        !tree
-            .nodes()
-            .any(|id| matches!(tree.ctx(id), LangCtx::Function { name, .. } if name == "noise")),
+        !session.tree().nodes().any(
+            |id| matches!(session.tree().ctx(id), LangCtx::Function { name, .. } if name == "noise")
+        ),
         "the malformed `def noise(` should never have been captured"
     );
-    println!("\ntree settled: {}", report.reached_fixpoint);
+    let ids_before = function_ids(session.tree());
+
+    // Edit 1: the user appends a new function at the end of the file.
+    // Only the root and the new function's chain get re-parsed; `add`,
+    // `bad`, and `zero` keep their node identities and parsed subtrees.
+    let appended = "\ndef ten() { return 10; }\n";
+    let edit = Edit::insert(source.len(), appended.len());
+    source.push_str(appended);
+    session.edit(edit);
+    let report = session.run(&engine, &source, &SerialExecutor, &CancelToken::new());
+    println!("\nafter append: {report:?}");
+    assert!(report.reached_fixpoint);
+    assert_eq!(report.nodes_processed, 3, "root + `ten` + its return only");
+    for (name, id) in &ids_before {
+        let reused = function_ids(session.tree())
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, id)| *id)
+            .unwrap();
+        assert_eq!(
+            *id, reused,
+            "function `{name}` must be reused, not re-parsed"
+        );
+    }
+    assert_eq!(session.tree().status(bad_return), Status::Failed);
+
+    // Edit 2: the user fixes `bad`'s empty return. Only the root scan,
+    // `bad`, and its return run again — and the return node heals in place.
+    let span = session.tree().span(bad_return);
+    let replacement = "return x;";
+    let edit = Edit::replace(span.start, span.end, span.start + replacement.len());
+    source.replace_range(span.to_range(), replacement);
+    session.edit(edit);
+    let report = session.run(&engine, &source, &SerialExecutor, &CancelToken::new());
+    println!("after fix: {report:?}\n");
+    assert!(report.reached_fixpoint);
+    assert_eq!(report.nodes_processed, 3, "root + `bad` + its return only");
+
+    let healed = return_of(session.tree(), "bad").unwrap();
+    assert_eq!(
+        healed, bad_return,
+        "the return node should be reused, healed in place"
+    );
+    assert_eq!(session.tree().status(healed), Status::Done);
+
+    for (name, id) in &ids_before {
+        let reused = function_ids(session.tree())
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, id)| *id)
+            .unwrap();
+        assert_eq!(*id, reused, "function `{name}` must survive edit 2 too");
+    }
+
+    println!("final counts: {:?}", session.tree().status_counts());
+    dump(session.tree(), &source, session.tree().root(), 0);
+    println!("\nrevision: {}", session.revision());
 }

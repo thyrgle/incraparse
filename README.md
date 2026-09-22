@@ -115,6 +115,29 @@ tree — lives in `examples/mini_lang.rs`:
 cargo run --example mini_lang
 ```
 
+## Incremental edits
+
+The tree is built to be *re-parsed*, not rebuilt. A [`Session`] wraps a
+[`ParseTree`] that can absorb [`Edit`]s: every span is remapped into the new
+coordinates and only the nodes the edit touched are reset for re-parsing.
+When the next run re-expands their parents, produced children are matched
+against the surviving ones **by span and context** — equal children keep
+their identity, their status, and their whole subtree:
+
+```rust,ignore
+session.edit(Edit::insert(source.len(), appended.len()));
+let report = session.run(&engine, &source, &SerialExecutor, &CancelToken::new());
+// report.nodes_processed == 3  — root scan + the new function's chain only;
+// every pre-existing function kept its NodeId and parsed subtree.
+```
+
+An edit inside one function body re-parses that function; every other
+function is carried over untouched. Fixing a syntax error heals the region
+in place — the node keeps its identity and retries every pass, including
+ones it had previously exhausted. See `examples/mini_lang.rs` for a full
+walkthrough (append a function, then fix a broken return — 3 nodes re-parsed
+per edit instead of the whole file).
+
 ## Executors and cancellation
 
 A round's batch of nodes goes through the [`Executor`] trait:
@@ -138,16 +161,17 @@ concurrency machinery at all.
 | [`Schedule`] | Ordered passes; round `r` uses pass `r`. |
 | [`ParseTree`] | Arena of `(span, ctx, status)` nodes with stable [`NodeId`]s. |
 | [`Engine`] | Drives rounds to a fixpoint. |
+| [`Session`] | Long-lived document: edits + re-parses with subtree reuse. |
+| [`Edit`] | One text change: `replace(start, old_end, new_end)`. |
 | [`Outcome`] | `Expand(children)` / `Done` / `Failed`. |
 | [`RunReport`] | Rounds run, work done, failures, fixpoint/cancellation flags. |
 
 ## Roadmap
 
-- **Edit invalidation**: stable node IDs make it cheap to re-run only the
-  subtrees whose spans overlap an edit — the "incremental" in incremental
-  parsing.
 - **`incraparse-lsp`**: an adapter crate wiring the engine into an LSP server
   loop (background runs, cancellation, partial results).
+- Finer-grained reuse hooks (e.g. matching by user-supplied keys instead of
+  `PartialEq`).
 
 ## Status
 
@@ -157,6 +181,8 @@ v0.1.0 — core semantics are settling; the API may still change.
 [`Schedule`]: https://docs.rs/incraparse/latest/incraparse/struct.Schedule.html
 [`ParseTree`]: https://docs.rs/incraparse/latest/incraparse/struct.ParseTree.html
 [`Engine`]: https://docs.rs/incraparse/latest/incraparse/struct.Engine.html
+[`Session`]: https://docs.rs/incraparse/latest/incraparse/struct.Session.html
+[`Edit`]: https://docs.rs/incraparse/latest/incraparse/struct.Edit.html
 [`Outcome`]: https://docs.rs/incraparse/latest/incraparse/enum.Outcome.html
 [`RunReport`]: https://docs.rs/incraparse/latest/incraparse/struct.RunReport.html
 [`Span`]: https://docs.rs/incraparse/latest/incraparse/struct.Span.html

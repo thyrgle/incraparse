@@ -108,11 +108,10 @@
 //!
 //! # Roadmap
 //!
-//! * Edit invalidation: stable [`NodeId`]s make it cheap to re-run only the
-//!   subtrees overlapping an edit (this is the "incremental" in incremental
-//!   parsing).
 //! * `incraparse-lsp`: an adapter crate wiring the engine into an LSP server
 //!   loop with background runs and cancellation between batches.
+//! * Finer-grained reuse hooks (e.g. matching by user-supplied keys instead
+//!   of `PartialEq`).
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
