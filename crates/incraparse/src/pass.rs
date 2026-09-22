@@ -18,9 +18,11 @@ use crate::span::Span;
 /// * Passes must be pure: they must not mutate shared state and must produce
 ///   the same output for the same `(source, span, ctx)` input.
 /// * Every child span returned from [`Outcome::Expand`] must be contained in
-///   the input span and (by default) strictly smaller than it. The engine
-///   rejects outcomes that violate this, marking the node [`Failed`](crate::Status::Failed);
-///   this is what guarantees termination.
+///   the input span and on the same source revision. By default a child may
+///   cover its parent exactly; with
+///   [`EngineConfig::enforce_shrink`](crate::EngineConfig::enforce_shrink)
+///   it must be strictly smaller. The engine rejects outcomes that violate
+///   this, marking the node [`Failed`](crate::Status::Failed).
 /// * Passes must be `Send + Sync` so the engine can run batches on any
 ///   [`Executor`](crate::Executor).
 ///

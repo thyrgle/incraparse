@@ -57,11 +57,14 @@ Unparsed ──▶ Expanded ──┐   (children carry the remaining work)
 
 ### Termination by construction
 
-Passes may only produce child spans **contained in** and (by default)
-**strictly smaller than** their parent. The engine rejects any outcome that
-violates this, marking the node failed. Regions therefore strictly shrink down
-the tree: the tree is finite, every node is processed at most once per pass,
-and no schedule can loop forever.
+Passes may only produce child spans **contained in** their parent and on the
+same source revision. The engine rejects any outcome that violates this,
+marking the node failed. Since round `r` only processes nodes at depth `r`
+and runs are capped at one round per scheduled pass, every node is processed
+at most once per pass and no schedule can loop forever. (For "always
+divides" passes, `EngineConfig::enforce_shrink` additionally requires
+children to be strictly smaller; by default a child may cover its parent
+exactly — e.g. a file containing exactly one function.)
 
 ## Quick start
 

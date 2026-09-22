@@ -274,8 +274,7 @@ impl<C> ParseTree<C> {
     ///
     /// Child spans must live on the same source revision as their parent and
     /// be contained in it; when `enforce_shrink` is set they must also be
-    /// strictly smaller. Violating outcomes mark the node failed.
-    ///
+    /// strictly smaller. Violating outcomes mark the node failed.    ///
     /// When the node already has children (it was invalidated by an edit and
     /// is being re-expanded), each produced child is matched against the
     /// existing children by span and context: a match is *reused* — same

@@ -30,25 +30,22 @@ pub struct RunReport {
 }
 
 /// Tunables for an [`Engine`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EngineConfig {
-    /// Require every child span to be strictly smaller than its parent
-    /// (default `true`). This is the termination guarantee: region sizes
-    /// strictly decrease down the tree, so the tree is finite and each node
-    /// is processed at most once per pass.
+    /// When `true`, every child span must be *strictly* smaller than its
+    /// parent — an extra invariant for "always divides" passes. When
+    /// `false` (the default), a child may cover its parent exactly, which
+    /// is legitimate: a file containing exactly one function parses as that
+    /// one function. Either way children must stay **contained** in their
+    /// parent and on the same source revision.
+    ///
+    /// Termination does not depend on this setting: every node is processed
+    /// at most once per scheduled pass, and runs are bounded by
+    /// [`max_rounds`](Self::max_rounds).
     pub enforce_shrink: bool,
     /// Hard cap on rounds per run. `None` (the default) means one round per
     /// scheduled pass.
     pub max_rounds: Option<usize>,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            enforce_shrink: true,
-            max_rounds: None,
-        }
-    }
 }
 
 /// The multi-pass fixpoint driver.

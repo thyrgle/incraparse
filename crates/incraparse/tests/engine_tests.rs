@@ -115,7 +115,31 @@ fn retries_exhaust_after_schedule_ends() {
 }
 
 #[test]
-fn strict_shrink_is_enforced_by_default() {
+fn equal_span_children_are_allowed_by_default() {
+    struct SameSpanChild;
+    impl Pass for SameSpanChild {
+        type Ctx = ();
+        fn parse(&self, _source: &str, span: Span, _ctx: &()) -> Outcome<()> {
+            Outcome::Expand(vec![(span, ())])
+        }
+    }
+
+    let mut schedule = Schedule::new();
+    schedule.push(SameSpanChild);
+    schedule.push(done_pass());
+
+    let mut tree = root("abc");
+    let report = run_rounds(schedule, "abc", &mut tree);
+
+    assert!(report.reached_fixpoint);
+    assert_eq!(report.nodes_failed, 0);
+    assert_eq!(tree.status(tree.root()), Status::Expanded);
+    assert_eq!(tree.children(tree.root()).len(), 1);
+    assert_eq!(tree.status(tree.children(tree.root())[0]), Status::Done);
+}
+
+#[test]
+fn strict_shrink_is_opt_in() {
     struct SameSpanChild;
     impl Pass for SameSpanChild {
         type Ctx = ();
@@ -127,8 +151,15 @@ fn strict_shrink_is_enforced_by_default() {
     let mut schedule = Schedule::new();
     schedule.push(SameSpanChild);
 
+    let engine = Engine::with_config(
+        schedule,
+        EngineConfig {
+            enforce_shrink: true,
+            max_rounds: None,
+        },
+    );
     let mut tree = root("abc");
-    let report = run_rounds(schedule, "abc", &mut tree);
+    let report = engine.run("abc", &mut tree, &SerialExecutor, &CancelToken::new());
 
     assert_eq!(report.nodes_failed, 1);
     assert_eq!(tree.status(tree.root()), Status::Failed);
