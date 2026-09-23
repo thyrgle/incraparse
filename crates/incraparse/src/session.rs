@@ -190,6 +190,12 @@ impl<C: Clone + PartialEq + Send + 'static> Session<C> {
         }
     }
 
+    /// Creates a session whose root covers all of `source` at revision
+    /// `source_rev` — the common case, with no hand-built root span.
+    pub fn from_source(source: &str, source_rev: u64, root_ctx: C) -> Self {
+        Self::new(source_rev, Span::new(0, source.len(), source_rev), root_ctx)
+    }
+
     /// The current source revision; bumped by every [`edit`](Self::edit).
     pub fn revision(&self) -> u64 {
         self.tree.source_rev()

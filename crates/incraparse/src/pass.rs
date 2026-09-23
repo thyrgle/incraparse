@@ -62,3 +62,49 @@ pub trait Pass {
         std::any::type_name::<Self>()
     }
 }
+
+/// Creates a pass from a closure — no struct, no impl block.
+///
+/// The closure receives the same arguments as [`Pass::parse`] and returns
+/// the same [`Outcome`]; captures are allowed, which makes stateful passes
+/// (counters, lookup tables) trivial. Passes built this way are named
+/// `"PassFn"` in diagnostics.
+///
+/// # Examples
+///
+/// ```
+/// use incraparse::{pass_fn, Outcome, Pass, Span};
+///
+/// let accept = pass_fn(|_source: &str, _span, _ctx: &()| Outcome::Done);
+/// assert!(matches!(accept.parse("abc", Span::new(0, 3, 0), &()), Outcome::Done));
+/// ```
+pub fn pass_fn<C, F>(f: F) -> PassFn<C, F>
+where
+    F: for<'a> Fn(&'a str, Span, &'a C) -> Outcome<C> + Send + Sync,
+{
+    PassFn {
+        f,
+        phantom: std::marker::PhantomData,
+    }
+}
+
+/// A [`Pass`] built from a closure. See [`pass_fn`].
+pub struct PassFn<C, F> {
+    f: F,
+    phantom: std::marker::PhantomData<fn(&C)>,
+}
+
+impl<C, F> Pass for PassFn<C, F>
+where
+    F: for<'a> Fn(&'a str, Span, &'a C) -> Outcome<C> + Send + Sync,
+{
+    type Ctx = C;
+
+    fn parse(&self, source: &str, span: Span, ctx: &C) -> Outcome<C> {
+        (self.f)(source, span, ctx)
+    }
+
+    fn name(&self) -> &'static str {
+        "PassFn"
+    }
+}

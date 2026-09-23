@@ -4,6 +4,7 @@ use crate::cancel::CancelToken;
 use crate::executor::Executor;
 use crate::job::Job;
 use crate::outcome::Outcome;
+use crate::pass::Pass;
 use crate::schedule::Schedule;
 use crate::tree::ParseTree;
 
@@ -90,6 +91,56 @@ pub struct Engine<C> {
     config: EngineConfig,
 }
 
+/// Types that can become a [`Schedule`]: tuples of passes (1–12, mixed
+/// types welcome) and vectors of boxed passes.
+///
+/// Not intended to be implemented outside this crate; use it as a bound for
+/// APIs like [`Engine::with`].
+#[doc(hidden)]
+pub trait Passes<C> {
+    fn into_schedule(self) -> Schedule<C>;
+}
+
+macro_rules! impl_passes_for_tuple {
+    ($($name:ident),+) => {
+        impl<C, $($name),+> Passes<C> for ($($name,)+)
+        where
+            $($name: Pass<Ctx = C> + Send + Sync + 'static,)+
+        {
+            fn into_schedule(self) -> Schedule<C> {
+                #[allow(non_snake_case)]
+                let ($($name,)+) = self;
+                let mut schedule = Schedule::new();
+                $( schedule.push($name); )+
+                schedule
+            }
+        }
+    };
+}
+
+impl_passes_for_tuple!(P1);
+impl_passes_for_tuple!(P1, P2);
+impl_passes_for_tuple!(P1, P2, P3);
+impl_passes_for_tuple!(P1, P2, P3, P4);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7, P8);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7, P8, P9);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11);
+impl_passes_for_tuple!(P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12);
+
+impl<C> Passes<C> for Vec<Box<dyn Pass<Ctx = C> + Send + Sync>> {
+    fn into_schedule(self) -> Schedule<C> {
+        let mut schedule = Schedule::new();
+        for pass in self {
+            schedule.push_boxed(pass);
+        }
+        schedule
+    }
+}
+
 impl<C> Engine<C> {
     /// Creates an engine with default [`EngineConfig`].
     pub fn new(schedule: Schedule<C>) -> Self {
@@ -97,6 +148,20 @@ impl<C> Engine<C> {
             schedule,
             config: EngineConfig::default(),
         }
+    }
+
+    /// Creates an engine from passes directly — a tuple of mixed pass types
+    /// (up to 12) or a `Vec` of boxed passes:
+    ///
+    /// ```
+    /// use incraparse::{pass_fn, Engine, Outcome, Span};
+    ///
+    /// let a = pass_fn(|_source: &str, _span, _ctx: &()| Outcome::Done);
+    /// let b = pass_fn(|_source: &str, _span, _ctx: &()| Outcome::Done);
+    /// let engine = Engine::with((a, b)); // round 0 runs `a`, round 1 runs `b`
+    /// ```
+    pub fn with(passes: impl Passes<C>) -> Self {
+        Self::new(passes.into_schedule())
     }
 
     /// Creates an engine with an explicit configuration.

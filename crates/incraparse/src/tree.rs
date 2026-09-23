@@ -52,6 +52,12 @@ impl<C> ParseTree<C> {
         }
     }
 
+    /// Creates a tree whose root covers all of `source` at revision
+    /// `source_rev` — the common case, with no hand-built root span.
+    pub fn from_source(source: &str, source_rev: u64, root_ctx: C) -> Self {
+        Self::new(source_rev, Span::new(0, source.len(), source_rev), root_ctx)
+    }
+
     /// The source revision this tree was built against.
     pub fn source_rev(&self) -> u64 {
         self.rev

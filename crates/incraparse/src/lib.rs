@@ -133,17 +133,27 @@ mod status;
 mod tree;
 
 pub use cancel::CancelToken;
-pub use engine::{Engine, EngineConfig, RunReport};
+pub use engine::{Engine, EngineConfig, Passes, RunReport};
 pub use executor::{Executor, SerialExecutor};
 pub use job::Job;
 pub use node::NodeId;
 pub use outcome::Outcome;
-pub use pass::Pass;
+pub use pass::{pass_fn, Pass, PassFn};
 pub use schedule::Schedule;
 pub use session::{Edit, Session};
 pub use span::Span;
 pub use status::{Status, StatusCounts};
 pub use tree::ParseTree;
+
+/// The types you almost always want, in one glob.
+pub mod prelude {
+    #[cfg(feature = "parallel")]
+    pub use crate::RayonExecutor;
+    pub use crate::{
+        pass_fn, CancelToken, Engine, EngineConfig, Executor, Job, NodeId, Outcome, ParseTree,
+        Pass, RunReport, Schedule, SerialExecutor, Session, Span, Status, StatusCounts,
+    };
+}
 
 #[cfg(feature = "parallel")]
 pub use executor_rayon::RayonExecutor;

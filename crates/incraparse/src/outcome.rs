@@ -2,6 +2,15 @@
 
 use crate::span::Span;
 
+impl<C> Outcome<C> {
+    /// Expands the region into a single child — the common case.
+    ///
+    /// Equivalent to `Outcome::Expand(vec![(span, ctx)])`.
+    pub fn one(span: Span, ctx: C) -> Self {
+        Outcome::Expand(vec![(span, ctx)])
+    }
+}
+
 /// What a [`Pass`](crate::Pass) instructs the engine to do with a node.
 ///
 /// # Examples

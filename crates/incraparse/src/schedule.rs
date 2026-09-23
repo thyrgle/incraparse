@@ -56,6 +56,11 @@ impl<C> Schedule<C> {
         self.passes.push(Box::new(pass));
     }
 
+    /// Appends an already-boxed pass.
+    pub fn push_boxed(&mut self, pass: Box<dyn Pass<Ctx = C> + Send + Sync>) {
+        self.passes.push(pass);
+    }
+
     /// Number of passes in the schedule; also the maximum number of rounds.
     pub fn len(&self) -> usize {
         self.passes.len()

@@ -71,9 +71,21 @@ mod document;
 mod encoding;
 mod line_index;
 mod server;
+mod simple;
 
 pub use diagnostics::{diagnostics, DiagnosticsOptions, FailedNode};
 pub use document::Document;
 pub use encoding::PositionEncoding;
 pub use line_index::LineIndex;
 pub use server::{serve, serve_on, Documents, Language};
+pub use simple::{NodeLabel, SimpleLanguage};
+
+/// The types you almost always want, in one glob (includes the core
+/// prelude).
+pub mod prelude {
+    pub use crate::{
+        diagnostics, serve, serve_on, DiagnosticsOptions, Document, Documents, FailedNode,
+        Language, LineIndex, NodeLabel, PositionEncoding, SimpleLanguage,
+    };
+    pub use incraparse::prelude::*;
+}
