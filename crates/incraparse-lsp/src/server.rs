@@ -29,8 +29,7 @@ pub type Documents<C> = HashMap<lsp_types::Uri, Document<C>>;
 ///
 /// Implement this and hand it to [`serve`] (stdio) or [`serve_on`] (any
 /// transport). Everything else — lifecycle, change bookkeeping, diagnostics
-/// publishing, symbol dispatch — is the skeleton's job.
-///
+/// publishing, symbol dispatch — is the skeleton's job.///
 /// # Examples
 ///
 /// A minimal server that parses files and reports nothing:
@@ -88,7 +87,17 @@ pub type Documents<C> = HashMap<lsp_types::Uri, Document<C>>;
 pub trait Language<C: Clone + PartialEq + Send + 'static>: Send + Sync + 'static {
     /// Whether to advertise and answer `textDocument/documentSymbol`.
     /// Defaults to `false`; flip to `true` and override [`symbols`](Self::symbols).
+    ///
+    /// For per-instance decisions (e.g. capability discovered from a config
+    /// file), override [`supports_symbols`](Self::supports_symbols) instead —
+    /// it defaults to this constant.
     const SUPPORTS_SYMBOLS: bool = false;
+
+    /// Runtime hook for symbol support; defaults to
+    /// [`SUPPORTS_SYMBOLS`](Self::SUPPORTS_SYMBOLS).
+    fn supports_symbols(&self) -> bool {
+        Self::SUPPORTS_SYMBOLS
+    }
 
     /// The pass schedule run over every document.
     fn engine(&self) -> &Engine<C>;
@@ -133,7 +142,7 @@ where
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::INCREMENTAL,
         )),
-        document_symbol_provider: Some(OneOf::Left(L::SUPPORTS_SYMBOLS)),
+        document_symbol_provider: Some(OneOf::Left(language.supports_symbols())),
         ..Default::default()
     }
 }
@@ -203,7 +212,7 @@ where
                     break;
                 }
                 match req.method.as_str() {
-                    "textDocument/documentSymbol" if L::SUPPORTS_SYMBOLS => {
+                    "textDocument/documentSymbol" if language.supports_symbols() => {
                         let params: lsp_types::DocumentSymbolParams =
                             serde_json::from_value(req.params)?;
                         let symbols = documents
