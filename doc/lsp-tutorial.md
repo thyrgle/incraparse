@@ -666,7 +666,146 @@ You should see:
 
 Happy parsing.
 
-## Appendix: wrapping a real combinator
+## Appendix A: a language server in pure Lua
+
+Don't want to write Rust at all? `incraparse-lua` lets you define an entire
+language server — passes, diagnostics, outline symbols — in **one Lua
+file**, run by a small prebuilt binary. It works in Neovim and VS Code
+alike, because to them it's just an LSP binary.
+
+Build the server once:
+
+```console
+$ cargo install incraparse-lua-server
+$ which incraparse-lua-server
+~/.cargo/bin/incraparse-lua-server
+```
+
+Now write the language. `~/.config/minilang/lang.lua`:
+
+```lua
+return {
+  name = "minilang",
+  root_ctx = { File = true },
+  passes = {
+    -- Round 0: the file -> one region per `def name(params) { ... }`.
+    function(source, span, ctx)
+      if ctx.File == nil then return "failed" end
+      local children = {}
+      local i = span.start + 1
+      while i <= span["end"] do
+        local name = source:match("^def%s+([%w_]+)", i)
+        if not name then
+          i = i + 1 -- malformed line: skip one byte, keep scanning
+        else
+          local p0 = source:find("(", i, true)
+          local p1 = source:find(")", p0, true)
+          local params = {}
+          for p in source:sub(p0 + 1, p1 - 1):gmatch("[%w_]+") do
+            params[#params + 1] = p
+          end
+          children[#children + 1] = {
+            start = i - 1,
+            ["end"] = source:find("}", p1, true),
+            ctx = { Function = { name = name, params = params } },
+          }
+          i = source:find("}", p1, true) + 1
+        end
+      end
+      return { expand = children }
+    end,
+
+    -- Round 1: function bodies -> `return ...;` regions.
+    function(source, span, ctx)
+      if ctx.Function == nil then return "failed" end
+      local children = {}
+      local i = span.start + 1
+      while i <= span["end"] do
+        local s0, e0 = source:find("return", i, true)
+        if not s0 or e0 > span["end"] then break end
+        local semi = source:find(";", e0 + 1, true)
+        if not semi or semi > span["end"] then break end
+        children[#children + 1] = {
+          start = s0 - 1, ["end"] = semi,
+          ctx = { Return = { ["function"] = ctx.Function.name } },
+        }
+        i = semi + 1
+      end
+      return { expand = children }
+    end,
+
+    -- Round 2: the checker.
+    function(source, span, ctx)
+      if ctx.Return == nil then return "failed" end
+      local expr = source:sub(span.start + 1, span["end"]):match("^return%s*(.-)%s*;$")
+      if expr == "" then return "failed" end
+      return "done"
+    end,
+  },
+
+  diagnostic = function(source, node)
+    if node.ctx.Return then
+      return { message = "empty return in `" .. node.ctx.Return["function"] .. "`" }
+    end
+  end,
+
+  symbols = function(nodes)
+    local out = {}
+    for _, n in ipairs(nodes) do
+      if n.ctx.Function then
+        out[#out + 1] = {
+          name = n.ctx.Function.name,
+          detail = "(" .. table.concat(n.ctx.Function.params, ", ") .. ")",
+          start = n.start, ["end"] = n["end"],
+        }
+      end
+    end
+    return out
+  end,
+}
+```
+
+What you get from the skeleton, for free:
+
+- **Incremental re-parses**: after an edit, only the touched function is
+  re-run; everything whose Lua context is deep-equal to before is reused.
+- **Error resilience**: a malformed definition costs one byte of resync,
+  and thrown Lua errors become `Failed` regions — never a crashed server.
+- **Position math**: you return byte ranges; editor `(line, character)`
+  positions in the negotiated encoding are handled for you.
+
+> Note the `["end"]` spellings: `end` is a Lua keyword, so table fields
+> need bracket syntax. Ranges are **0-based, end-exclusive** byte offsets —
+> `start` inclusive, `end` exclusive.
+
+### Wiring it up
+
+Neovim — the ftplugin from section 6, one line changed:
+
+```lua
+vim.lsp.start({
+  name = "minilang",
+  cmd = {
+    "incraparse-lua-server",
+    vim.fn.stdpath("config") .. "/langs/minilang.lua",
+  },
+  root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1]
+    or vim.api.nvim_buf_get_name(0)),
+})
+```
+
+VS Code — the extension from section 5, one line changed:
+
+```js
+const SERVER = "incraparse-lua-server"; // on PATH after cargo install
+// and pass the config: serverOptions run/debug become
+// { command: SERVER, args: ["/home/you/.config/minilang/lang.lua"] }
+```
+
+The complete Lua definition (with balanced-brace body matching) ships as
+`crates/incraparse-lua/examples/minilang.lua`.
+
+## Appendix B: wrapping a real combinator
 
 Hand-rolled scanning is fine for MiniLang, but you may already have a
 [nom](https://docs.rs/nom) or [chumsky](https://docs.rs/chumsky) grammar —
