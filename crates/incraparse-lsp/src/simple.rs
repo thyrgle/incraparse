@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use incraparse::Engine;
-use lsp_types::{Diagnostic, DocumentSymbol, SymbolKind};
+use lsp_types::{CompletionResponse, Diagnostic, DocumentSymbol, Hover, Location, SymbolKind};
 
 use crate::document::Document;
 use crate::encoding::PositionEncoding;
@@ -50,7 +50,24 @@ pub struct SimpleLanguage<C> {
     diagnostic_fn: Option<Arc<DiagnosticFn<C>>>,
     symbols_fn: Option<Arc<SymbolsFn<C>>>,
     label_fn: Option<Arc<LabelFn<C>>>,
+    describe_fn: Option<Arc<DescribeFn<C>>>,
+    hover_fn: Option<Arc<HoverFn<C>>>,
+    definition_fn: Option<Arc<DefinitionFn<C>>>,
+    completion_fn: Option<Arc<CompletionFn<C>>>,
 }
+
+/// The type of the [`SimpleLanguage::describe_fn`] hook: describe a
+/// context in one sentence and the skeleton turns it into hover contents.
+pub type DescribeFn<C> = dyn Fn(&C) -> Option<String> + Send + Sync;
+
+/// The type of the [`SimpleLanguage::hover_fn`] hook (full control).
+pub type HoverFn<C> = dyn Fn(&Document<C>, usize) -> Option<Hover> + Send + Sync;
+
+/// The type of the [`SimpleLanguage::definition_fn`] hook.
+pub type DefinitionFn<C> = dyn Fn(&Document<C>, usize) -> Option<Vec<Location>> + Send + Sync;
+
+/// The type of the [`SimpleLanguage::completion_fn`] hook.
+pub type CompletionFn<C> = dyn Fn(&Document<C>, usize) -> Option<CompletionResponse> + Send + Sync;
 
 /// A display name (and optional detail) for one tree node — what
 /// [`SimpleLanguage::label_fn`] returns to power the outline view.
@@ -60,20 +77,32 @@ pub struct NodeLabel {
     pub name: String,
     /// Optional detail shown next to the name (e.g. a parameter list).
     pub detail: Option<String>,
+    /// The outline kind (defaults to [`SymbolKind::FUNCTION`] — override it
+    /// for languages whose named things are rules, sections, selectors,
+    /// recipes, ...).
+    pub kind: SymbolKind,
 }
 
 impl NodeLabel {
-    /// Creates a label with no detail.
+    /// Creates a label with no detail and the default kind.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             detail: None,
+            kind: SymbolKind::FUNCTION,
         }
     }
 
     /// Sets the detail string.
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Sets the outline kind — a language's named things need not be
+    /// functions.
+    pub fn kind(mut self, kind: SymbolKind) -> Self {
+        self.kind = kind;
         self
     }
 }
@@ -88,6 +117,10 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
             diagnostic_fn: None,
             symbols_fn: None,
             label_fn: None,
+            describe_fn: None,
+            hover_fn: None,
+            definition_fn: None,
+            completion_fn: None,
         }
     }
 
@@ -124,6 +157,43 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
         self.label_fn = Some(Arc::new(f));
         self
     }
+
+    /// One-sentence hover: describe a context and the skeleton finds the
+    /// node under the cursor, builds the hover contents, and attaches the
+    /// node's range. The friendliest way to add hover — nothing about the
+    /// language's shape is assumed.
+    pub fn describe_fn(mut self, f: impl Fn(&C) -> Option<String> + Send + Sync + 'static) -> Self {
+        self.describe_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Full-control hover: receives the document and the cursor's byte
+    /// offset (position encoding already handled).
+    pub fn hover_fn(
+        mut self,
+        f: impl Fn(&Document<C>, usize) -> Option<Hover> + Send + Sync + 'static,
+    ) -> Self {
+        self.hover_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Go-to-definition: return the locations to jump to.
+    pub fn definition_fn(
+        mut self,
+        f: impl Fn(&Document<C>, usize) -> Option<Vec<Location>> + Send + Sync + 'static,
+    ) -> Self {
+        self.definition_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Completions for the cursor position.
+    pub fn completion_fn(
+        mut self,
+        f: impl Fn(&Document<C>, usize) -> Option<CompletionResponse> + Send + Sync + 'static,
+    ) -> Self {
+        self.completion_fn = Some(Arc::new(f));
+        self
+    }
 }
 
 /// `C` must additionally be `Sync` because the stored closures accept
@@ -131,6 +201,42 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
 impl<C: Clone + PartialEq + Send + Sync + 'static> Language<C> for SimpleLanguage<C> {
     fn supports_symbols(&self) -> bool {
         self.symbols_fn.is_some() || self.label_fn.is_some()
+    }
+
+    fn supports_hover(&self) -> bool {
+        self.hover_fn.is_some() || self.describe_fn.is_some()
+    }
+
+    fn supports_definition(&self) -> bool {
+        self.definition_fn.is_some()
+    }
+
+    fn supports_completion(&self) -> bool {
+        self.completion_fn.is_some()
+    }
+
+    fn hover(&self, doc: &Document<C>, offset: usize) -> Option<Hover> {
+        if let Some(f) = &self.hover_fn {
+            return f(doc, offset);
+        }
+        let describe = self.describe_fn.as_ref()?;
+        let tree = doc.session().tree();
+        let id = tree.node_at(offset)?;
+        let text = describe(tree.ctx(id))?;
+        Some(Hover {
+            contents: lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(text)),
+            range: Some(doc.range(tree.span(id))),
+        })
+    }
+
+    fn definition(&self, doc: &Document<C>, offset: usize) -> Option<Vec<Location>> {
+        let f = self.definition_fn.as_ref()?;
+        f(doc, offset)
+    }
+
+    fn completion(&self, doc: &Document<C>, offset: usize) -> Option<CompletionResponse> {
+        let f = self.completion_fn.as_ref()?;
+        f(doc, offset)
     }
 
     fn engine(&self) -> &Engine<C> {
@@ -164,7 +270,7 @@ impl<C: Clone + PartialEq + Send + Sync + 'static> Language<C> for SimpleLanguag
                     Some(DocumentSymbol {
                         name: label.name,
                         detail: label.detail,
-                        kind: SymbolKind::FUNCTION,
+                        kind: label.kind,
                         range,
                         selection_range: range,
                         children: None,

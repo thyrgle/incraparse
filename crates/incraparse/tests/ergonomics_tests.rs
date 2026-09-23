@@ -97,3 +97,57 @@ fn from_source_covers_whole_text() {
     let session = Session::<()>::from_source("hello", 7, ());
     assert_eq!(session.tree().span(session.tree().root()).to_range(), 0..5);
 }
+
+#[test]
+fn node_at_finds_the_deepest_containing_node() {
+    // root 0..10 -> two children -> inner 1..4 inside the first child
+    fn splitter(source: &str, span: Span, _ctx: &()) -> Outcome<()> {
+        if span.len() >= 3 {
+            return Outcome::one(Span::new(span.start + 1, span.end - 1, span.rev), ());
+        }
+        let _ = source;
+        Outcome::Done
+    }
+    // Chain: root 0..10 -> 1..9 -> 2..8 -> 3..7 -> 4..6 (Done).
+    let (tree, report) = run(
+        "abcdefghij",
+        (
+            pass_fn(splitter),
+            pass_fn(splitter),
+            pass_fn(splitter),
+            pass_fn(splitter),
+            pass_fn(splitter),
+        ),
+        (),
+    );
+    assert!(report.reached_fixpoint, "{report:?}");
+
+    let root = tree.root();
+    let mid = tree.children(root)[0]; // 1..9
+    let inner = tree.children(mid)[0]; // 2..8
+    let deeper = tree.children(inner)[0]; // 3..7
+    let leaf = tree.children(deeper)[0]; // 4..6
+
+    assert_eq!(tree.node_at(2), Some(inner), "deepest containing node wins");
+    assert_eq!(
+        tree.node_at(1),
+        Some(mid),
+        "mid covers 1, inner starts at 2"
+    );
+    assert_eq!(
+        tree.node_at(6),
+        Some(deeper),
+        "3..7 contains 6, leaf 4..6 doesn't"
+    );
+    assert_eq!(
+        tree.node_at(7),
+        Some(inner),
+        "half-open: 2..8 covers up to 7"
+    );
+    assert_eq!(tree.node_at(5), Some(leaf));
+    assert_eq!(tree.node_at(9), Some(root), "only the root covers 9");
+    assert_eq!(tree.node_at(0), Some(root));
+    assert_eq!(tree.node_at(10), None);
+    assert_eq!(tree.node_at(99), None);
+    assert_eq!(tree.status(leaf), Status::Done);
+}

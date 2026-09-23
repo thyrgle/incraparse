@@ -1,7 +1,7 @@
 //! One open editor file: text, session, version, and position encoding.
 
 use incraparse::{CancelToken, Edit, Engine, Executor, RunReport, Session, Span};
-use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
+use lsp_types::{Location, Position, Range, TextDocumentContentChangeEvent, Uri};
 
 use crate::encoding::PositionEncoding;
 use crate::line_index::LineIndex;
@@ -133,6 +133,15 @@ impl<C: Clone + PartialEq + Send + 'static> Document<C> {
     /// change event).
     pub fn revision(&self) -> u64 {
         self.session.revision()
+    }
+
+    /// Converts a tree span to an LSP location in this document — the
+    /// convenient shape for go-to-definition answers.
+    pub fn location(&self, span: Span) -> Location {
+        Location {
+            uri: self.uri.clone(),
+            range: self.range(span),
+        }
     }
 
     /// Converts a tree span to an LSP range in the document's encoding.

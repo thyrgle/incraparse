@@ -59,6 +59,12 @@ impl Span {
         self.start <= other.start && other.end <= self.end
     }
 
+    /// Returns `true` if `self` contains the byte `offset`:
+    /// `start <= offset < end`. Zero-width spans never contain anything.
+    pub fn contains_offset(&self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
+    }
+
     /// Returns `true` if the two spans share at least one byte.
     pub fn overlaps(&self, other: &Span) -> bool {
         self.start < other.end && other.start < self.end

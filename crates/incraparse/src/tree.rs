@@ -61,6 +61,37 @@ impl<C> ParseTree<C> {
         Self::new(source_rev, Span::new(0, source.len(), source_rev), root_ctx)
     }
 
+    /// The deepest node whose span contains `offset` — the natural query
+    /// behind hover, go-to-definition, and friends.
+    ///
+    /// Containment is half-open: `offset` must satisfy
+    /// `span.start <= offset < span.end`, so zero-width regions never match
+    /// and clicking the last byte of a region still finds it. Ties between
+    /// equal-span siblings go to the first child.
+    ///
+    /// Returns `None` if the offset is outside the root's span.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the root is not part of this tree (cannot happen for trees
+    /// built through the public API).
+    pub fn node_at(&self, offset: usize) -> Option<NodeId> {
+        let mut current = self.root;
+        if !self.span(current).contains_offset(offset) {
+            return None;
+        }
+        loop {
+            let next = self
+                .children(current)
+                .iter()
+                .find(|child| self.span(**child).contains_offset(offset));
+            match next {
+                Some(&child) => current = child,
+                None => return Some(current),
+            }
+        }
+    }
+
     /// The source revision this tree was built against.
     pub fn source_rev(&self) -> u64 {
         self.rev

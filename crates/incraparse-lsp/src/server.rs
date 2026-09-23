@@ -13,8 +13,9 @@ use std::error::Error;
 use incraparse::{CancelToken, Engine};
 use lsp_server::Connection;
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, OneOf,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, HoverParams, Location, OneOf, TextDocumentSyncCapability,
+    TextDocumentSyncKind,
 };
 
 use crate::diagnostics::{self, DiagnosticsOptions, FailedNode};
@@ -124,10 +125,47 @@ pub trait Language<C: Clone + PartialEq + Send + 'static>: Send + Sync + 'static
     ) -> Option<lsp_types::Diagnostic>;
 
     /// The document symbols for the outline view. Only consulted when
-    /// [`SUPPORTS_SYMBOLS`](Self::SUPPORTS_SYMBOLS) is `true`.
+    /// [`supports_symbols`](Self::supports_symbols) is `true`.
     fn symbols(&self, doc: &Document<C>) -> Vec<lsp_types::DocumentSymbol> {
         let _ = doc;
         Vec::new()
+    }
+
+    /// Runtime hook for hover support; defaults to `false`.
+    fn supports_hover(&self) -> bool {
+        false
+    }
+
+    /// Runtime hook for go-to-definition support; defaults to `false`.
+    fn supports_definition(&self) -> bool {
+        false
+    }
+
+    /// Runtime hook for completion support; defaults to `false`.
+    fn supports_completion(&self) -> bool {
+        false
+    }
+
+    /// Hover contents for the byte `offset` in `doc`, or `None`.
+    ///
+    /// The skeleton converts the client's position (in the negotiated
+    /// encoding) to a byte offset before calling this, so implementations
+    /// never touch position math.
+    fn hover(&self, doc: &Document<C>, offset: usize) -> Option<lsp_types::Hover> {
+        let _ = (doc, offset);
+        None
+    }
+
+    /// Definition locations for the byte `offset` in `doc`, or `None`.
+    fn definition(&self, doc: &Document<C>, offset: usize) -> Option<Vec<Location>> {
+        let _ = (doc, offset);
+        None
+    }
+
+    /// Completions for the byte `offset` in `doc`, or `None`.
+    fn completion(&self, doc: &Document<C>, offset: usize) -> Option<CompletionResponse> {
+        let _ = (doc, offset);
+        None
     }
 }
 
@@ -143,6 +181,15 @@ where
             TextDocumentSyncKind::INCREMENTAL,
         )),
         document_symbol_provider: Some(OneOf::Left(language.supports_symbols())),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(
+            language.supports_hover(),
+        )),
+        definition_provider: Some(OneOf::Left(language.supports_definition())),
+        completion_provider: language
+            .supports_completion()
+            .then(|| lsp_types::CompletionOptions {
+                ..Default::default()
+            }),
         ..Default::default()
     }
 }
@@ -221,6 +268,37 @@ where
                             .unwrap_or_default();
                         connection.sender.send(lsp_server::Message::Response(
                             lsp_server::Response::new_ok(req.id, symbols),
+                        ))?;
+                    }
+                    "textDocument/hover" if language.supports_hover() => {
+                        let params: HoverParams = serde_json::from_value(req.params)?;
+                        let tdp = &params.text_document_position_params;
+                        let hover = documents
+                            .get(&tdp.text_document.uri)
+                            .and_then(|doc| language.hover(doc, doc.offset(tdp.position)));
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_ok(req.id, hover),
+                        ))?;
+                    }
+                    "textDocument/definition" if language.supports_definition() => {
+                        let params: lsp_types::GotoDefinitionParams =
+                            serde_json::from_value(req.params)?;
+                        let tdp = &params.text_document_position_params;
+                        let locations = documents
+                            .get(&tdp.text_document.uri)
+                            .and_then(|doc| language.definition(doc, doc.offset(tdp.position)));
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_ok(req.id, locations),
+                        ))?;
+                    }
+                    "textDocument/completion" if language.supports_completion() => {
+                        let params: CompletionParams = serde_json::from_value(req.params)?;
+                        let tdp = &params.text_document_position;
+                        let completions = documents
+                            .get(&tdp.text_document.uri)
+                            .and_then(|doc| language.completion(doc, doc.offset(tdp.position)));
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_ok(req.id, completions),
                         ))?;
                     }
                     _ => {
