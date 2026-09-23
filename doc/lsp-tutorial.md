@@ -88,9 +88,9 @@ Create `src/main.rs` and start with the context type and shared scanning
 helpers:
 
 ```rust
-use incraparse::{Engine, Outcome, Pass, Schedule, Span};
-use incraparse_lsp::{Document, FailedNode, Language};
-use lsp_types::{Diagnostic, DocumentSymbol};
+use incraparse::prelude::*;
+use incraparse_lsp::{Document, FailedNode, NodeLabel, SimpleLanguage};
+use lsp_types::Diagnostic;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LangCtx {
@@ -162,69 +162,64 @@ expands each well-formed definition into a child region. Anything malformed
 scanning, so the rest of the file still parses:
 
 ```rust
-struct FunctionsPass;
-
-impl Pass for FunctionsPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        if !matches!(ctx, LangCtx::File) {
-            return Outcome::Failed;
-        }
-        let bytes = source.as_bytes();
-        let mut children = Vec::new();
-        let mut i = span.start;
-        while i < span.end {
-            i = skip_ws(bytes, i);
-            let Some((kw_start, kw_end)) = read_ident(bytes, i) else {
-                i += 1;
-                continue;
-            };
-            if &source[kw_start..kw_end] != "def" {
-                i = kw_end;
-                continue;
-            }
-            let name_pos = skip_ws(bytes, kw_end);
-            let Some((name_start, name_end)) = read_ident(bytes, name_pos) else {
-                i = kw_end;
-                continue;
-            };
-            let open_paren = skip_ws(bytes, name_end);
-            if open_paren >= span.end || bytes[open_paren] != b'(' {
-                i = kw_end;
-                continue;
-            }
-            // Parameter lists live on one line: bounded resync on failure.
-            let line_end = (open_paren..span.end)
-                .find(|&j| bytes[j] == b'\n')
-                .unwrap_or(span.end);
-            let Some(close_paren) = (open_paren + 1..line_end).find(|&j| bytes[j] == b')') else {
-                i = line_end + 1;
-                continue;
-            };
-            let Some(params) = parse_params(bytes, open_paren + 1, close_paren) else {
-                i = close_paren + 1;
-                continue;
-            };
-            let open_brace = skip_ws(bytes, close_paren + 1);
-            if open_brace >= span.end || bytes[open_brace] != b'{' {
-                i = close_paren + 1;
-                continue;
-            }
-            let Some(close_brace) = match_brace(bytes, open_brace, span.end) else {
-                break;
-            };
-            children.push((
-                Span::new(i, close_brace + 1, span.rev),
-                LangCtx::Function {
-                    name: source[name_start..name_end].to_string(),
-                    params,
-                },
-            ));
-            i = close_brace + 1;
-        }
-        Outcome::Expand(children)
+/// Round 0: the file.
+fn functions_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    if !matches!(ctx, LangCtx::File) {
+        return Outcome::Failed;
     }
+    let bytes = source.as_bytes();
+    let mut children = Vec::new();
+    let mut i = span.start;
+    while i < span.end {
+        i = skip_ws(bytes, i);
+        let Some((kw_start, kw_end)) = read_ident(bytes, i) else {
+            i += 1;
+            continue;
+        };
+        if &source[kw_start..kw_end] != "def" {
+            i = kw_end;
+            continue;
+        }
+        let name_pos = skip_ws(bytes, kw_end);
+        let Some((name_start, name_end)) = read_ident(bytes, name_pos) else {
+            i = kw_end;
+            continue;
+        };
+        let open_paren = skip_ws(bytes, name_end);
+        if open_paren >= span.end || bytes[open_paren] != b'(' {
+            i = kw_end;
+            continue;
+        }
+        // Parameter lists live on one line: bounded resync on failure.
+        let line_end = (open_paren..span.end)
+            .find(|&j| bytes[j] == b'\n')
+            .unwrap_or(span.end);
+        let Some(close_paren) = (open_paren + 1..line_end).find(|&j| bytes[j] == b')') else {
+            i = line_end + 1;
+            continue;
+        };
+        let Some(params) = parse_params(bytes, open_paren + 1, close_paren) else {
+            i = close_paren + 1;
+            continue;
+        };
+        let open_brace = skip_ws(bytes, close_paren + 1);
+        if open_brace >= span.end || bytes[open_brace] != b'{' {
+            i = close_paren + 1;
+            continue;
+        }
+        let Some(close_brace) = match_brace(bytes, open_brace, span.end) else {
+            break;
+        };
+        children.push((
+            Span::new(i, close_brace + 1, span.rev),
+            LangCtx::Function {
+                name: source[name_start..name_end].to_string(),
+                params,
+            },
+        ));
+        i = close_brace + 1;
+    }
+    Outcome::Expand(children)
 }
 ```
 
@@ -233,37 +228,32 @@ statements. This is where **context threading** happens: the pass reads the
 function's name out of `ctx` and stamps it onto each statement region:
 
 ```rust
-struct BodyPass;
-
-impl Pass for BodyPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        let LangCtx::Function { name, .. } = ctx else {
-            return Outcome::Failed;
-        };
-        let bytes = source.as_bytes();
-        let mut children = Vec::new();
-        let mut i = span.start;
-        while i < span.end {
-            i = skip_ws(bytes, i);
-            if source[i..].starts_with("return") {
-                let Some(semi) = (i..span.end).find(|&j| bytes[j] == b';') else {
-                    break;
-                };
-                children.push((
-                    Span::new(i, semi + 1, span.rev),
-                    LangCtx::Return {
-                        function: name.clone(),
-                    },
-                ));
-                i = semi + 1;
-            } else {
-                i += 1;
-            }
+/// Round 1: function bodies.
+fn body_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    let LangCtx::Function { name, .. } = ctx else {
+        return Outcome::Failed;
+    };
+    let bytes = source.as_bytes();
+    let mut children = Vec::new();
+    let mut i = span.start;
+    while i < span.end {
+        i = skip_ws(bytes, i);
+        if source[i..].starts_with("return") {
+            let Some(semi) = (i..span.end).find(|&j| bytes[j] == b';') else {
+                break;
+            };
+            children.push((
+                Span::new(i, semi + 1, span.rev),
+                LangCtx::Return {
+                    function: name.clone(),
+                },
+            ));
+            i = semi + 1;
+        } else {
+            i += 1;
         }
-        Outcome::Expand(children)
     }
+    Outcome::Expand(children)
 }
 ```
 
@@ -272,30 +262,25 @@ stays in the tree as a `Failed` leaf — a durable marker an editor can turn
 into a squiggle:
 
 ```rust
-struct ReturnPass;
-
-impl Pass for ReturnPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        let LangCtx::Return { function: _ } = ctx else {
-            return Outcome::Failed;
-        };
-        let text = source[span.to_range()].trim();
-        let expr = text
-            .strip_prefix("return")
-            .and_then(|rest| rest.strip_suffix(';'))
-            .map(str::trim)
-            .unwrap_or("");
-        if expr.is_empty() {
-            return Outcome::Failed;
-        }
-        Outcome::Done
+/// Round 2: the checker.
+fn return_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    let LangCtx::Return { function: _ } = ctx else {
+        return Outcome::Failed;
+    };
+    let text = source[span.to_range()].trim();
+    let expr = text
+        .strip_prefix("return")
+        .and_then(|rest| rest.strip_suffix(';'))
+        .map(str::trim)
+        .unwrap_or("");
+    if expr.is_empty() {
+        return Outcome::Failed;
     }
+    Outcome::Done
 }
 ```
 
-## 3. The server: implement `Language`, call `serve()`
+## 3. The server: describe it, call `serve()`
 
 Editors and servers speak JSON-RPC over stdio. A server has to handle:
 
@@ -308,47 +293,20 @@ Editors and servers speak JSON-RPC over stdio. A server has to handle:
 
 `incraparse-lsp`'s skeleton owns *all of that*. You describe your language —
 the pass schedule, the root context, how failing regions become diagnostics,
-how the tree becomes outline symbols — by implementing one trait, and hand
-it to `serve()`:
+how the tree becomes outline symbols — as data, and hand it to `serve()`:
 
 ```rust
-/// MiniLang's entire server definition.
-struct MiniLang {
-    engine: Engine<LangCtx>,
-}
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let engine = Engine::with((
+        pass_fn(functions_pass), // round 0
+        pass_fn(body_pass),      // round 1
+        pass_fn(return_pass),    // round 2
+    ));
 
-impl MiniLang {
-    fn new() -> Self {
-        let mut schedule = Schedule::new();
-        schedule.push(FunctionsPass); // round 0
-        schedule.push(BodyPass); // round 1
-        schedule.push(ReturnPass); // round 2
-        Self {
-            engine: Engine::new(schedule),
-        }
-    }
-}
-
-impl Language<LangCtx> for MiniLang {
-    // Advertise and answer `textDocument/documentSymbol`.
-    const SUPPORTS_SYMBOLS: bool = true;
-
-    fn engine(&self) -> &Engine<LangCtx> {
-        &self.engine
-    }
-
-    fn root_ctx(&self) -> LangCtx {
-        LangCtx::File
-    }
-
-    // How a failing region becomes a squiggle. Returning `None` stays
-    // silent — handy for contexts whose failure is expected.
-    fn diagnostic(
-        &self,
-        _doc: &Document<LangCtx>,
-        node: FailedNode<'_, LangCtx>,
-    ) -> Option<Diagnostic> {
-        match node.ctx {
+    let language = SimpleLanguage::new(engine, LangCtx::File)
+        // How a failing region becomes a squiggle. Returning `None` stays
+        // silent — handy for contexts whose failure is expected.
+        .diagnostic_fn(|_doc, node| match node.ctx {
             LangCtx::Return { function } => Some(Diagnostic {
                 severity: Some(lsp_types::DiagnosticSeverity::ERROR),
                 message: format!("`{function}`: this `return` could not be parsed"),
@@ -356,35 +314,17 @@ impl Language<LangCtx> for MiniLang {
                 ..Diagnostic::default()
             }),
             _ => None,
-        }
-    }
+        })
+        // The outline view: name each context, and every named node in the
+        // tree becomes a symbol with the node's range — no tree walk needed.
+        .label_fn(|ctx| match ctx {
+            LangCtx::Function { name, params } => Some(
+                NodeLabel::new(name.clone()).detail(format!("({})", params.join(", "))),
+            ),
+            _ => None,
+        });
 
-    // The outline view, read straight off the parse tree.
-    fn symbols(&self, doc: &Document<LangCtx>) -> Vec<DocumentSymbol> {
-        let tree = doc.session().tree();
-        let mut symbols = Vec::new();
-        for id in tree.nodes() {
-            if let LangCtx::Function { name, params } = tree.ctx(id) {
-                let range = doc.range(tree.span(id));
-                #[allow(deprecated)]
-                symbols.push(DocumentSymbol {
-                    name: name.clone(),
-                    detail: Some(format!("({})", params.join(", "))),
-                    kind: lsp_types::SymbolKind::FUNCTION,
-                    range,
-                    selection_range: range,
-                    children: None,
-                    tags: None,
-                    deprecated: None,
-                });
-            }
-        }
-        symbols
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    incraparse_lsp::serve(MiniLang::new())
+    incraparse_lsp::serve(language)
 }
 ```
 

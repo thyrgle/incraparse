@@ -79,7 +79,7 @@ exactly — e.g. a file containing exactly one function.)
 ## Quick start
 
 ```rust
-use incraparse::{Engine, Outcome, ParseTree, Pass, Schedule, SerialExecutor, Span, Status};
+use incraparse::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ctx {
@@ -88,31 +88,22 @@ enum Ctx {
 }
 
 // Round 0: a real pass would scan for `def name(...) { ... }` skeletons and
-// expand each one into a child region. Here we fake one function.
-struct Functions;
+// expand each one into a child region. Here we fake one function. Passes
+// are plain closures — or implement `Pass` for a struct if you prefer.
+let functions = pass_fn(|_source: &str, span, ctx: &Ctx| match ctx {
+    Ctx::File => Outcome::one(
+        Span::new(span.start + 4, span.end, span.rev),
+        Ctx::Function { name: "main".into() },
+    ),
+    Ctx::Function { .. } => Outcome::Done,
+});
 
-impl Pass for Functions {
-    type Ctx = Ctx;
-
-    fn parse(&self, _source: &str, span: Span, ctx: &Ctx) -> Outcome<Ctx> {
-        match ctx {
-            Ctx::File => Outcome::Expand(vec![(
-                Span::new(span.start + 4, span.end, span.rev),
-                Ctx::Function { name: "main".into() },
-            )]),
-            Ctx::Function { .. } => Outcome::Done,
-        }
-    }
-}
-
-let mut schedule = Schedule::new();
-schedule.push(Functions); // round 0: find functions
-schedule.push(Functions); // round 1: settle what round 0 created
+// Round 0 finds the function; round 1 settles what round 0 created.
+let engine = Engine::with((functions, functions));
 
 let source = "def main() { }";
-let mut tree = ParseTree::new(0, Span::new(0, source.len(), 0), Ctx::File);
+let mut tree = ParseTree::from_source(source, 0, Ctx::File);
 
-let engine = Engine::new(schedule);
 let report = engine.run(source, &mut tree, &SerialExecutor, &incraparse::CancelToken::new());
 
 assert!(report.reached_fixpoint);
@@ -156,12 +147,13 @@ per edit instead of the whole file).
 `incraparse-lsp` bridges the engine to the Language Server Protocol. Two
 layers:
 
-- **`serve()` + `Language`** — implement one trait (engine, root context,
-  diagnostics hook, optional symbols) and get a complete server: initialize,
-  document bookkeeping, incremental change translation, diagnostics
-  publishing, symbol dispatch, and a structurally deadlock-free shutdown.
-  Runs on stdio via `lsp-server`; `serve_on()` accepts any connection you
-  own.
+- **`serve()` + `SimpleLanguage`** — describe the language with a builder
+  (engine, root context, diagnostics hook, optional `label_fn`/`symbols_fn`
+  for the outline) and get a complete server: initialize, document
+  bookkeeping, incremental change translation, diagnostics publishing,
+  symbol dispatch, and a structurally deadlock-free shutdown. Runs on stdio
+  via `lsp-server`; `serve_on()` accepts any connection you own. Power users
+  can implement the `Language` trait directly.
 - **Framework-agnostic pieces** — `LineIndex`/`PositionEncoding` (byte ↔
   UTF-8/16/32 positions), `Document<C>` (didChange events → byte `Edit`s →
   one engine run, with tree reuse), and `diagnostics()` — for when you'd

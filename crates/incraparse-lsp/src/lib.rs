@@ -42,9 +42,7 @@
 //! let uri: Uri = "file:///hello.txt".parse()?;
 //! let mut doc = Document::open(uri, 0, "héllo wörld".into(), PositionEncoding::Utf16, Ctx::File);
 //!
-//! let mut schedule = Schedule::new();
-//! schedule.push(Accept);
-//! let engine = Engine::new(schedule);
+//! let engine = Engine::with((Accept,));
 //!
 //! // The client edits "héllo" -> "héy": a same-length replace at byte 3.
 //! // Translate the client's change events into `Edit`s via

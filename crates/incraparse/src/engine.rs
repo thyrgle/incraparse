@@ -76,10 +76,7 @@ pub struct EngineConfig {
 ///     }
 /// }
 ///
-/// let mut schedule = Schedule::new();
-/// schedule.push(MarkDone);
-///
-/// let engine = Engine::new(schedule);
+/// let engine = Engine::with((MarkDone,));
 /// let mut tree = ParseTree::new(0, Span::new(0, 3, 0), ());
 /// let report = engine.run("abc", &mut tree, &SerialExecutor, &incraparse::CancelToken::new());
 ///

@@ -89,16 +89,12 @@
 //! }
 //!
 //! # fn main() {
-//! let mut schedule = Schedule::new();
 //! // Round 0 finds the function region; round 1 re-runs the pass on the
 //! // nodes round 0 created (children always start one round deeper).
-//! schedule.push(Functions);
-//! schedule.push(Functions);
+//! let engine = Engine::with((Functions, Functions));
 //!
 //! let source = "def main() { }";
-//! let mut tree = ParseTree::new(0, Span::new(0, source.len(), 0), Ctx::File);
-//!
-//! let engine = Engine::new(schedule);
+//! let mut tree = ParseTree::from_source(source, 0, Ctx::File);
 //! let report = engine.run(source, &mut tree, &SerialExecutor, &incraparse::CancelToken::new());
 //!
 //! assert!(report.reached_fixpoint);

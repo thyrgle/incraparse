@@ -14,10 +14,8 @@
 //!
 //! Run with `cargo run --example mini_lang`.
 
-use incraparse::{
-    CancelToken, Edit, Engine, Outcome, ParseTree, Pass, Schedule, SerialExecutor, Session, Span,
-    Status,
-};
+use incraparse::prelude::*;
+use incraparse::{Edit, ParseTree};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LangCtx {
@@ -78,124 +76,106 @@ fn parse_params(bytes: &[u8], start: usize, end: usize) -> Option<Vec<String>> {
     Some(params)
 }
 
-struct FunctionsPass;
-
-impl Pass for FunctionsPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        if !matches!(ctx, LangCtx::File) {
-            return Outcome::Failed;
+fn functions_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    if !matches!(ctx, LangCtx::File) {
+        return Outcome::Failed;
+    }
+    let bytes = source.as_bytes();
+    let mut children = Vec::new();
+    let mut i = span.start;
+    while i < span.end {
+        i = skip_ws(bytes, i);
+        let Some((kw_start, kw_end)) = read_ident(bytes, i) else {
+            i += 1;
+            continue;
+        };
+        if &source[kw_start..kw_end] != "def" {
+            i = kw_end;
+            continue;
         }
-        let bytes = source.as_bytes();
-        let mut children = Vec::new();
-        let mut i = span.start;
-        while i < span.end {
-            i = skip_ws(bytes, i);
-            let Some((kw_start, kw_end)) = read_ident(bytes, i) else {
-                i += 1;
-                continue;
-            };
-            if &source[kw_start..kw_end] != "def" {
-                i = kw_end;
-                continue;
-            }
-            let name_pos = skip_ws(bytes, kw_end);
-            let Some((name_start, name_end)) = read_ident(bytes, name_pos) else {
-                i = kw_end;
-                continue;
-            };
-            let open_paren = skip_ws(bytes, name_end);
-            if open_paren >= span.end || bytes[open_paren] != b'(' {
-                i = kw_end;
-                continue;
-            }
-            let line_end = (open_paren..span.end)
-                .find(|&j| bytes[j] == b'\n')
-                .unwrap_or(span.end);
-            let Some(close_paren) = (open_paren + 1..line_end).find(|&j| bytes[j] == b')') else {
-                i = line_end + 1;
-                continue;
-            };
-            let Some(params) = parse_params(bytes, open_paren + 1, close_paren) else {
-                i = close_paren + 1;
-                continue;
-            };
-            let open_brace = skip_ws(bytes, close_paren + 1);
-            if open_brace >= span.end || bytes[open_brace] != b'{' {
-                i = close_paren + 1;
-                continue;
-            }
-            let Some(close_brace) = match_brace(bytes, open_brace, span.end) else {
+        let name_pos = skip_ws(bytes, kw_end);
+        let Some((name_start, name_end)) = read_ident(bytes, name_pos) else {
+            i = kw_end;
+            continue;
+        };
+        let open_paren = skip_ws(bytes, name_end);
+        if open_paren >= span.end || bytes[open_paren] != b'(' {
+            i = kw_end;
+            continue;
+        }
+        let line_end = (open_paren..span.end)
+            .find(|&j| bytes[j] == b'\n')
+            .unwrap_or(span.end);
+        let Some(close_paren) = (open_paren + 1..line_end).find(|&j| bytes[j] == b')') else {
+            i = line_end + 1;
+            continue;
+        };
+        let Some(params) = parse_params(bytes, open_paren + 1, close_paren) else {
+            i = close_paren + 1;
+            continue;
+        };
+        let open_brace = skip_ws(bytes, close_paren + 1);
+        if open_brace >= span.end || bytes[open_brace] != b'{' {
+            i = close_paren + 1;
+            continue;
+        }
+        let Some(close_brace) = match_brace(bytes, open_brace, span.end) else {
+            break;
+        };
+        children.push((
+            Span::new(i, close_brace + 1, span.rev),
+            LangCtx::Function {
+                name: source[name_start..name_end].to_string(),
+                params,
+            },
+        ));
+        i = close_brace + 1;
+    }
+    Outcome::Expand(children)
+}
+
+fn body_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    let LangCtx::Function { name, .. } = ctx else {
+        return Outcome::Failed;
+    };
+    let bytes = source.as_bytes();
+    let mut children = Vec::new();
+    let mut i = span.start;
+    while i < span.end {
+        i = skip_ws(bytes, i);
+        if source[i..].starts_with("return") {
+            let Some(semi) = (i..span.end).find(|&j| bytes[j] == b';') else {
                 break;
             };
             children.push((
-                Span::new(i, close_brace + 1, span.rev),
-                LangCtx::Function {
-                    name: source[name_start..name_end].to_string(),
-                    params,
+                Span::new(i, semi + 1, span.rev),
+                LangCtx::Return {
+                    function: name.clone(),
                 },
             ));
-            i = close_brace + 1;
+            i = semi + 1;
+        } else {
+            i += 1;
         }
-        Outcome::Expand(children)
     }
+    Outcome::Expand(children)
 }
 
-struct BodyPass;
-
-impl Pass for BodyPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        let LangCtx::Function { name, .. } = ctx else {
-            return Outcome::Failed;
-        };
-        let bytes = source.as_bytes();
-        let mut children = Vec::new();
-        let mut i = span.start;
-        while i < span.end {
-            i = skip_ws(bytes, i);
-            if source[i..].starts_with("return") {
-                let Some(semi) = (i..span.end).find(|&j| bytes[j] == b';') else {
-                    break;
-                };
-                children.push((
-                    Span::new(i, semi + 1, span.rev),
-                    LangCtx::Return {
-                        function: name.clone(),
-                    },
-                ));
-                i = semi + 1;
-            } else {
-                i += 1;
-            }
-        }
-        Outcome::Expand(children)
+fn return_pass(source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
+    let LangCtx::Return { function } = ctx else {
+        return Outcome::Failed;
+    };
+    let text = source[span.to_range()].trim();
+    let expr = text
+        .strip_prefix("return")
+        .and_then(|rest| rest.strip_suffix(';'))
+        .map(str::trim)
+        .unwrap_or("");
+    if expr.is_empty() {
+        eprintln!("  !! empty return in `{function}` at {span}");
+        return Outcome::Failed;
     }
-}
-
-struct ReturnPass;
-
-impl Pass for ReturnPass {
-    type Ctx = LangCtx;
-
-    fn parse(&self, source: &str, span: Span, ctx: &LangCtx) -> Outcome<LangCtx> {
-        let LangCtx::Return { function } = ctx else {
-            return Outcome::Failed;
-        };
-        let text = source[span.to_range()].trim();
-        let expr = text
-            .strip_prefix("return")
-            .and_then(|rest| rest.strip_suffix(';'))
-            .map(str::trim)
-            .unwrap_or("");
-        if expr.is_empty() {
-            eprintln!("  !! empty return in `{function}` at {span}");
-            return Outcome::Failed;
-        }
-        Outcome::Done
-    }
+    Outcome::Done
 }
 
 fn dump<C: std::fmt::Debug>(
@@ -225,11 +205,11 @@ fn dump<C: std::fmt::Debug>(
 }
 
 fn make_engine() -> Engine<LangCtx> {
-    let mut schedule = Schedule::new();
-    schedule.push(FunctionsPass);
-    schedule.push(BodyPass);
-    schedule.push(ReturnPass);
-    Engine::new(schedule)
+    Engine::with((
+        pass_fn(functions_pass),
+        pass_fn(body_pass),
+        pass_fn(return_pass),
+    ))
 }
 
 fn function_ids(tree: &ParseTree<LangCtx>) -> Vec<(String, incraparse::NodeId)> {
@@ -256,8 +236,7 @@ def zero() { return 0; }
     .to_string();
 
     let engine = make_engine();
-    let mut session: Session<LangCtx> =
-        Session::new(0, Span::new(0, source.len(), 0), LangCtx::File);
+    let mut session: Session<LangCtx> = Session::from_source(&source, 0, LangCtx::File);
 
     let report = session.run(&engine, &source, &SerialExecutor, &CancelToken::new());
     println!("initial run: {report:?}");
