@@ -4,6 +4,11 @@ A hands-on tutorial: parse a toy language with [incraparse](..), turn it into
 a Language Server Protocol (LSP) server, and get it running in **VS Code** and
 **Neovim** — live diagnostics and document symbols included.
 
+> New to incraparse? Start with
+> [`doc/parser-quickstart.md`](parser-quickstart.md) — a 30-minute,
+> editor-free introduction to writing passes. This tutorial picks up where
+> it ends and puts a parser into an editor.
+
 The finished product of every step lives in the repository at
 [`crates/incraparse-lsp/examples/mini_lang_server.rs`](../crates/incraparse-lsp/examples/mini_lang_server.rs);
 diff your code against it whenever something looks off.
