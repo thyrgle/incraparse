@@ -3,9 +3,11 @@
 use crate::cancel::CancelToken;
 use crate::executor::Executor;
 use crate::job::Job;
+use crate::node::NodeId;
 use crate::outcome::Outcome;
 use crate::pass::Pass;
 use crate::schedule::Schedule;
+use crate::span::Span;
 use crate::tree::ParseTree;
 
 /// Summary of a single [`Engine::run`].
@@ -15,7 +17,7 @@ use crate::tree::ParseTree;
 /// with work left over — typically nodes still [`Unparsed`](crate::Status::Unparsed)
 /// because the schedule has no pass for their round. Query
 /// [`ParseTree::pending`] to find them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunReport {
     /// Number of rounds that processed at least one node.
     pub rounds_run: usize,
@@ -28,6 +30,64 @@ pub struct RunReport {
     pub reached_fixpoint: bool,
     /// `true` if the run ended because the [`CancelToken`] fired.
     pub cancelled: bool,
+    /// Contract breaches the engine rejected during the run — a pass
+    /// produced a child region it wasn't allowed to produce (outside its
+    /// parent, wrong revision, not smaller while `enforce_shrink` is set).
+    /// Empty for well-behaved passes.
+    pub violations: Vec<Violation>,
+}
+
+/// One rejected child region: what a pass tried to produce and why the
+/// engine refused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Violation {
+    /// The node whose pass produced the rejected child.
+    pub node: NodeId,
+    /// The round in which the rejection happened (use to look up the pass).
+    pub round: usize,
+    /// The name of the scheduled pass, if the round had one.
+    pub pass: Option<&'static str>,
+    /// The rejected child region.
+    pub span: Span,
+    /// Why the child was rejected.
+    pub kind: ViolationKind,
+}
+
+/// The reason a produced child region was rejected. See [`Violation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViolationKind {
+    /// The child escaped the region it was parsed from — children must be
+    /// contained in their parent.
+    OutsideParent,
+    /// The child was built against a different source revision than its
+    /// parent.
+    WrongRevision,
+    /// The child is not strictly smaller than its parent while
+    /// [`EngineConfig::enforce_shrink`] is enabled.
+    NotSmaller,
+}
+
+impl std::fmt::Display for Violation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pass = self.pass.unwrap_or("pass");
+        match self.kind {
+            ViolationKind::OutsideParent => write!(
+                f,
+                "{pass} (round {}) produced child region {}, which escapes its parent region — children must be contained in the region they were parsed from",
+                self.round, self.span
+            ),
+            ViolationKind::WrongRevision => write!(
+                f,
+                "{pass} (round {}) produced child region {} against a stale source revision — children must use their parent's revision",
+                self.round, self.span
+            ),
+            ViolationKind::NotSmaller => write!(
+                f,
+                "{pass} (round {}) produced child region {} that is not strictly smaller than its parent (EngineConfig::enforce_shrink is enabled)",
+                self.round, self.span
+            ),
+        }
+    }
 }
 
 /// Tunables for an [`Engine`].
@@ -138,6 +198,12 @@ impl<C> Passes<C> for Vec<Box<dyn Pass<Ctx = C> + Send + Sync>> {
     }
 }
 
+impl<C> Passes<C> for Schedule<C> {
+    fn into_schedule(self) -> Schedule<C> {
+        self
+    }
+}
+
 impl<C> Engine<C> {
     /// Creates an engine with default [`EngineConfig`].
     pub fn new(schedule: Schedule<C>) -> Self {
@@ -162,8 +228,11 @@ impl<C> Engine<C> {
     }
 
     /// Creates an engine with an explicit configuration.
-    pub fn with_config(schedule: Schedule<C>, config: EngineConfig) -> Self {
-        Self { schedule, config }
+    pub fn with_config(passes: impl Passes<C>, config: EngineConfig) -> Self {
+        Self {
+            schedule: passes.into_schedule(),
+            config,
+        }
     }
 
     /// The pass schedule this engine runs.
@@ -213,29 +282,39 @@ impl<C> Engine<C> {
     {
         let mut report = RunReport::default();
         let max_rounds = self.max_rounds();
+        let mut violations = Vec::new();
 
         for round in 0..max_rounds {
             if cancel.is_cancelled() {
                 report.cancelled = true;
+                report.violations = violations;
                 return report;
             }
 
             let jobs = tree.ready_jobs(round);
             if jobs.is_empty() {
                 report.reached_fixpoint = true;
+                report.violations = violations;
                 return report;
             }
             let batch_size = jobs.len();
 
+            let pass_name = self.schedule.pass_name(round);
             let executed = exec.execute(jobs, |job| self.execute_job(source, job), cancel);
 
             let merged = executed.len();
             for (job, outcome) in executed {
-                if matches!(
-                    tree.apply(job.node, outcome, round, self.config.enforce_shrink),
-                    crate::tree::Applied::Failed
+                if let crate::tree::Applied::Failed(violation) = tree.apply(
+                    job.node,
+                    outcome,
+                    round,
+                    self.config.enforce_shrink,
+                    pass_name,
                 ) {
                     report.nodes_failed += 1;
+                    if let Some(violation) = violation {
+                        violations.push(violation);
+                    }
                 }
             }
 
@@ -244,11 +323,13 @@ impl<C> Engine<C> {
 
             if merged < batch_size {
                 report.cancelled = true;
+                report.violations = violations;
                 return report;
             }
         }
 
         report.reached_fixpoint = tree.pending(max_rounds).is_empty();
+        report.violations = violations;
         report
     }
 

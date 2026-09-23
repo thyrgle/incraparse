@@ -1,5 +1,6 @@
 //! The arena-backed parse tree produced by engine runs.
 
+use crate::engine::{Violation, ViolationKind};
 use crate::job::Job;
 use crate::node::{Node, NodeId};
 use crate::outcome::Outcome;
@@ -7,10 +8,12 @@ use crate::span::Span;
 use crate::status::{Status, StatusCounts};
 
 /// What applying an outcome did to a node; used to fill the run report.
+/// `Failed` carries the contract violation, if the failure was a rejected
+/// child region rather than the pass simply giving up.
 pub(crate) enum Applied {
     Expanded,
     Done,
-    Failed,
+    Failed(Option<Violation>),
 }
 
 /// A tree of source regions grown by the [`Engine`](crate::Engine).
@@ -292,6 +295,7 @@ impl<C> ParseTree<C> {
         outcome: Outcome<C>,
         round: usize,
         enforce_shrink: bool,
+        pass: Option<&'static str>,
     ) -> Applied
     where
         C: PartialEq,
@@ -306,7 +310,7 @@ impl<C> ParseTree<C> {
             Outcome::Failed => {
                 self.detach_children(id);
                 self.mark_failed(id, round);
-                Applied::Failed
+                Applied::Failed(None)
             }
             Outcome::Expand(children) => {
                 if children.is_empty() {
@@ -314,15 +318,32 @@ impl<C> ParseTree<C> {
                     self.set_status(id, Status::Done);
                     return Applied::Done;
                 }
-                let valid = children.iter().all(|(span, _)| {
-                    span.rev == parent_span.rev
-                        && parent_span.contains(span)
-                        && (!enforce_shrink || span.len() < parent_span.len())
-                });
-                if !valid {
+                let mut violation = None;
+                for (child, _) in children.iter() {
+                    let kind = if child.rev != parent_span.rev {
+                        Some(ViolationKind::WrongRevision)
+                    } else if !parent_span.contains(child) {
+                        Some(ViolationKind::OutsideParent)
+                    } else if enforce_shrink && child.len() >= parent_span.len() {
+                        Some(ViolationKind::NotSmaller)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        violation = Some(Violation {
+                            node: id,
+                            round,
+                            pass,
+                            span: *child,
+                            kind,
+                        });
+                        break;
+                    }
+                }
+                if let Some(violation) = violation {
                     self.detach_children(id);
                     self.mark_failed(id, round);
-                    return Applied::Failed;
+                    return Applied::Failed(Some(violation));
                 }
                 let next_depth = round + 1;
 

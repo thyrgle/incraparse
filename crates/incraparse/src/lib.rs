@@ -122,6 +122,7 @@ mod job;
 mod node;
 mod outcome;
 mod pass;
+mod run;
 mod schedule;
 mod session;
 mod span;
@@ -129,12 +130,13 @@ mod status;
 mod tree;
 
 pub use cancel::CancelToken;
-pub use engine::{Engine, EngineConfig, Passes, RunReport};
+pub use engine::{Engine, EngineConfig, Passes, RunReport, Violation, ViolationKind};
 pub use executor::{Executor, SerialExecutor};
 pub use job::Job;
 pub use node::NodeId;
 pub use outcome::Outcome;
 pub use pass::{pass_fn, Pass, PassFn};
+pub use run::run;
 pub use schedule::Schedule;
 pub use session::{Edit, Session};
 pub use span::Span;
@@ -146,8 +148,9 @@ pub mod prelude {
     #[cfg(feature = "parallel")]
     pub use crate::RayonExecutor;
     pub use crate::{
-        pass_fn, CancelToken, Engine, EngineConfig, Executor, Job, NodeId, Outcome, ParseTree,
-        Pass, RunReport, Schedule, SerialExecutor, Session, Span, Status, StatusCounts,
+        pass_fn, run, CancelToken, Engine, EngineConfig, Executor, Job, NodeId, Outcome, ParseTree,
+        Pass, RunReport, Schedule, SerialExecutor, Session, Span, Status, StatusCounts, Violation,
+        ViolationKind,
     };
 }
 
