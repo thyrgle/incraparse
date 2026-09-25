@@ -14,6 +14,9 @@ use crate::FailedNode;
 pub type DiagnosticFn<C> =
     dyn Fn(&Document<C>, &FailedNode<'_, C>) -> Option<Diagnostic> + Send + Sync;
 
+/// The type of the [`SimpleLanguage::extra_diagnostics`] hook.
+pub type ExtraDiagnosticsFn<C> = dyn Fn(&Document<C>) -> Vec<Diagnostic> + Send + Sync;
+
 /// The type of the [`SimpleLanguage::symbols_fn`] hook.
 pub type SymbolsFn<C> = dyn Fn(&Document<C>) -> Vec<DocumentSymbol> + Send + Sync;
 
@@ -48,6 +51,7 @@ pub struct SimpleLanguage<C> {
     root_ctx: C,
     encoding: PositionEncoding,
     diagnostic_fn: Option<Arc<DiagnosticFn<C>>>,
+    extra_diagnostics_fn: Option<Arc<ExtraDiagnosticsFn<C>>>,
     symbols_fn: Option<Arc<SymbolsFn<C>>>,
     label_fn: Option<Arc<LabelFn<C>>>,
     describe_fn: Option<Arc<DescribeFn<C>>>,
@@ -115,6 +119,7 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
             root_ctx,
             encoding: PositionEncoding::Utf16,
             diagnostic_fn: None,
+            extra_diagnostics_fn: None,
             symbols_fn: None,
             label_fn: None,
             describe_fn: None,
@@ -138,6 +143,18 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
         f: impl Fn(&Document<C>, &FailedNode<'_, C>) -> Option<Diagnostic> + Send + Sync + 'static,
     ) -> Self {
         self.diagnostic_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Diagnostics that do not come from parse failures — lint-rule
+    /// violations, style warnings, anything computed from the settled
+    /// document. Called once per publish, after the parse pass; its output
+    /// is appended to the parse diagnostics.
+    pub fn extra_diagnostics(
+        mut self,
+        f: impl Fn(&Document<C>) -> Vec<Diagnostic> + Send + Sync + 'static,
+    ) -> Self {
+        self.extra_diagnostics_fn = Some(Arc::new(f));
         self
     }
 
@@ -254,6 +271,13 @@ impl<C: Clone + PartialEq + Send + Sync + 'static> Language<C> for SimpleLanguag
     fn diagnostic(&self, doc: &Document<C>, node: FailedNode<'_, C>) -> Option<Diagnostic> {
         let f = self.diagnostic_fn.as_ref()?;
         f(doc, &node)
+    }
+
+    fn extra_diagnostics(&self, doc: &Document<C>) -> Vec<Diagnostic> {
+        match &self.extra_diagnostics_fn {
+            Some(f) => f(doc),
+            None => Vec::new(),
+        }
     }
 
     fn symbols(&self, doc: &Document<C>) -> Vec<DocumentSymbol> {

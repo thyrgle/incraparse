@@ -124,6 +124,15 @@ pub trait Language<C: Clone + PartialEq + Send + 'static>: Send + Sync + 'static
         node: FailedNode<'_, C>,
     ) -> Option<lsp_types::Diagnostic>;
 
+    /// Diagnostics that do not come from parse failures — lint-rule
+    /// violations, style warnings, anything computed from the settled
+    /// document rather than a failing tree node. Merged into the same
+    /// `publishDiagnostics` notification, after the parse diagnostics.
+    fn extra_diagnostics(&self, doc: &Document<C>) -> Vec<lsp_types::Diagnostic> {
+        let _ = doc;
+        Vec::new()
+    }
+
     /// The document symbols for the outline view. Only consulted when
     /// [`supports_symbols`](Self::supports_symbols) is `true`.
     fn symbols(&self, doc: &Document<C>) -> Vec<lsp_types::DocumentSymbol> {
@@ -203,9 +212,10 @@ where
     C: Clone + PartialEq + Send + 'static,
     L: Language<C>,
 {
-    let diags = diagnostics::diagnostics(doc, DiagnosticsOptions::default(), |node| {
+    let mut diags = diagnostics::diagnostics(doc, DiagnosticsOptions::default(), |node| {
         language.diagnostic(doc, node)
     });
+    diags.extend(language.extra_diagnostics(doc));
     let params = lsp_types::PublishDiagnosticsParams {
         uri: doc.uri().clone(),
         diagnostics: diags,
