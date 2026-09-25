@@ -79,7 +79,8 @@ exactly — e.g. a file containing exactly one function.)
 ## Getting started
 
 - **New to incraparse?** [`doc/parser-quickstart.md`](doc/parser-quickstart.md)
-  builds a working INI parser in ~30 minutes — no editor, no LSP.
+  builds a working INI parser in ~30 minutes — no editor, no LSP — in Rust
+  or, if you'd rather not write Rust at all, in pure Lua.
 - **Then** [`doc/lsp-tutorial.md`](doc/lsp-tutorial.md) puts it into VS Code
   and Neovim as a real language server.
 
