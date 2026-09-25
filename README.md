@@ -2,7 +2,7 @@
 
 Multi-pass **fixpoint parsing** for editors, LSPs, and compilers.
 
-This repository is a cargo workspace with two crates:
+This repository is a cargo workspace with five crates:
 
 | Crate | Role |
 |-------|------|

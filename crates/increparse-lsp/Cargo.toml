@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2021"
 description = "LSP adapter for increparse: documents, position encodings, and diagnostics bridges."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/thyrgle/increparse"
+readme = "../../README.md"
 keywords = ["lsp", "language-server", "incremental", "parser"]
 categories = ["parsing", "development-tools"]
 

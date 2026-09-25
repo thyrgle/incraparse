@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "chumsky adapter for increparse: wrap chumsky parsers in passes with correct absolute-span rebasing."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/thyrgle/increparse"
+readme = "../../README.md"
 keywords = ["parser", "chumsky", "combinators", "lsp"]
 categories = ["parsing"]
 

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Define an increparse language server in pure Lua: passes, diagnostics, and symbols in one Lua file."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/thyrgle/increparse"
+readme = "../../README.md"
 keywords = ["parser", "lua", "lsp", "neovim"]
 categories = ["parsing"]
 
