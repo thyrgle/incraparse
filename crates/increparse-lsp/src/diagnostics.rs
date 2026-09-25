@@ -73,7 +73,7 @@ pub struct DiagnosticsOptions {
 /// let engine = Engine::new(schedule);
 ///
 /// let uri: Uri = "file:///x.txt".parse()?;
-/// let mut doc = Document::open(uri, 1, "ok!".into(), PositionEncoding::Utf16, Ctx::File);
+/// let mut doc = Document::open(uri, 1, "".into(), "ok!".into(), PositionEncoding::Utf16, Ctx::File);
 /// doc.apply_changes(&engine, 1, &[], &SerialExecutor, &increparse::CancelToken::new());
 ///
 /// let diags = diagnostics(&doc, DiagnosticsOptions::default(), |node| {

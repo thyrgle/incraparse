@@ -331,6 +331,7 @@ where
                         let mut doc = Document::open(
                             item.uri.clone(),
                             item.version,
+                            item.language_id.clone(),
                             item.text,
                             language.encoding(),
                             language.root_ctx(),

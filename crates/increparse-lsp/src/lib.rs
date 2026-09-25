@@ -40,7 +40,7 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let uri: Uri = "file:///hello.txt".parse()?;
-//! let mut doc = Document::open(uri, 0, "héllo wörld".into(), PositionEncoding::Utf16, Ctx::File);
+//! let mut doc = Document::open(uri, 0, "".into(), "héllo wörld".into(), PositionEncoding::Utf16, Ctx::File);
 //!
 //! let engine = Engine::with((Accept,));
 //!

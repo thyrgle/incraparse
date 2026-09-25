@@ -40,7 +40,7 @@ use crate::line_index::LineIndex;
 /// let engine = Engine::new(schedule);
 ///
 /// let uri: Uri = "file:///w.txt".parse()?;
-/// let mut doc = Document::open(uri, 1, "abc".into(), PositionEncoding::Utf16, Ctx::File);
+/// let mut doc = Document::open(uri, 1, "".into(), "abc".into(), PositionEncoding::Utf16, Ctx::File);
 ///
 /// // A client insert at (0, 1): "abc" -> "aXbc".
 /// let change = TextDocumentContentChangeEvent {
@@ -64,6 +64,7 @@ use crate::line_index::LineIndex;
 /// ```
 pub struct Document<C> {
     uri: Uri,
+    language_id: String,
     text: String,
     session: Session<C>,
     version: i32,
@@ -75,9 +76,14 @@ impl<C: Clone + PartialEq + Send + 'static> Document<C> {
     /// Opens a document at `version` with the full initial `text`.
     ///
     /// The tree root covers the whole text and carries `root_ctx`.
+    /// `language_id` is the client's language id for the document (the
+    /// `languageId` field of `didOpen`); it is informational — servers
+    /// that dispatch per language read it back with
+    /// [`language_id`](Self::language_id). Pass `""` when there is none.
     pub fn open(
         uri: Uri,
         version: i32,
+        language_id: String,
         text: String,
         encoding: PositionEncoding,
         root_ctx: C,
@@ -86,6 +92,7 @@ impl<C: Clone + PartialEq + Send + 'static> Document<C> {
         let session = Session::new(0, Span::new(0, text.len(), 0), root_ctx);
         Self {
             uri,
+            language_id,
             text,
             session,
             version,
@@ -97,6 +104,12 @@ impl<C: Clone + PartialEq + Send + 'static> Document<C> {
     /// The document's URI.
     pub fn uri(&self) -> &Uri {
         &self.uri
+    }
+
+    /// The client's language id for this document (`""` when opened
+    /// without one).
+    pub fn language_id(&self) -> &str {
+        &self.language_id
     }
 
     /// The current text.

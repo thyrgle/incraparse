@@ -313,6 +313,7 @@ fn main_loop(
                         let mut doc = Doc::open(
                             item.uri.clone(),
                             item.version,
+                            item.language_id.clone(),
                             item.text,
                             PositionEncoding::Utf16,
                             LangCtx::File,
