@@ -8,7 +8,13 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
-const SOURCE: &str = "def add(a, b) { return a + b; }\ndef bad(x) { return; }";
+const SOURCE: &str = concat!(
+    "def add(a, b) { return a + b; }\n",
+    "def bad(x) { return; }\n",
+    // malformed header: no `)` on the line — must be skipped, not swallowed
+    "def noise( { return broken;\n",
+    "def zero() { return 0; }",
+);
 
 fn spawn_server() -> (Child, ChildStdin, Receiver<String>) {
     let path = env!("CARGO_BIN_EXE_incraparse-lua-server");
@@ -164,7 +170,8 @@ fn lua_defined_server_smoke() {
     let diags = wait_for_diagnostics(&rx, 1);
     assert_eq!(diags.as_array().unwrap().len(), 0, "the fix heals the file");
 
-    // documentSymbol: both functions visible with Lua-provided details.
+    // documentSymbol: every well-formed function visible with Lua-provided
+    // details; the malformed `noise` line never becomes a symbol.
     send(
         &mut stdin,
         &request(
@@ -180,7 +187,7 @@ fn lua_defined_server_smoke() {
         .iter()
         .map(|s| s["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["add", "bad"]);
+    assert_eq!(names, ["add", "bad", "zero"]);
     assert_eq!(symbols[0]["detail"], "(a, b)");
 
     // Shutdown handshake.

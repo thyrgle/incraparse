@@ -613,12 +613,14 @@ Happy parsing.
 
 ## Appendix A: a language server in pure Lua
 
-Don't want to write Rust at all? `incraparse-lua` lets you define an entire
-language server — passes, diagnostics, outline symbols — in **one Lua
-file**, run by a small prebuilt binary. It works in Neovim and VS Code
-alike, because to them it's just an LSP binary.
+This appendix is self-contained: no Rust code, and nothing from sections
+1–8 assumed. You define an entire language server — passes, diagnostics,
+outline symbols — in **one Lua file**, and a small binary runs it as a
+regular LSP server. To follow along you need a Rust toolchain (for a
+one-time install) and Neovim ≥ 0.8. VS Code works with the same binary,
+but its recipe is still pending — see the TODO at the end.
 
-Build the server once:
+### 1. Install the server binary
 
 ```console
 $ cargo install incraparse-lua-server
@@ -626,82 +628,180 @@ $ which incraparse-lua-server
 ~/.cargo/bin/incraparse-lua-server
 ```
 
-Now write the language. `~/.config/minilang/lang.lua`:
+(From a checkout of this repository instead:
+`cargo install --path crates/incraparse-lua`.)
+
+### 2. Write the language
+
+The language is MiniLang, the same one the rest of this tutorial serves —
+a file of function definitions. Create it at
+`~/.config/nvim/langs/minilang.lua` (the `langs/` directory does not exist
+yet — make it):
 
 ```lua
+-- MiniLang, defined entirely in Lua.
+--
+-- Language shape:
+--
+--   def add(a, b) { return a + b; }
+--   def bad(x) { return; }
+--
+-- Three passes:
+--   round 0: file -> one region per `def name(params) { ... }`
+--   round 1: function -> one region per `return ...;`
+--   round 2: return -> "done" if the expression is non-empty
+--
+-- Use with:
+--   incraparse-lua-server /path/to/this/file.lua
+
+local function skip_ws(s, i)
+  while i <= #s and s:sub(i, i):match("%s") do
+    i = i + 1
+  end
+  return i
+end
+
+-- Round 0: the file.
+local function functions_pass(source, span, ctx)
+  if ctx.File == nil then
+    return "failed"
+  end
+
+  local children = {}
+  local i = span.start + 1 -- Lua strings are 1-based; spans are 0-based
+  local limit = span["end"]
+
+  while i <= limit do
+    i = skip_ws(source, i)
+    if i > limit then
+      break
+    end
+
+    local name = source:match("^def%s+([%w_]+)", i)
+    if not name then
+      i = i + 1 -- one-byte resync: malformed lines cost nothing
+    else
+      local open_paren = source:find("(", i, true)
+      if not open_paren then
+        break
+      end
+      -- Parameter lists live on one line: a missing `)` costs the line,
+      -- never the definitions after it.
+      local nl = source:find("\n", open_paren, true)
+      local line_end = nl and (nl - 1) or limit
+      local close_paren = source:find(")", open_paren + 1, true)
+      if close_paren == nil or close_paren > line_end then
+        i = line_end + 1 -- malformed header line: skip it, keep scanning
+      else
+        local params = {}
+        for p in source:sub(open_paren + 1, close_paren - 1):gmatch("[%w_]+") do
+          params[#params + 1] = p
+        end
+
+        local open_brace = source:find("{", close_paren + 1, true)
+        if not open_brace then
+          i = close_paren + 1
+        else
+          local depth, close_brace = 1, nil
+          for j = open_brace + 1, limit do
+            local ch = source:sub(j, j)
+            if ch == "{" then
+              depth = depth + 1
+            elseif ch == "}" then
+              depth = depth - 1
+              if depth == 0 then
+                close_brace = j
+                break
+              end
+            end
+          end
+
+          if not close_brace then
+            break
+          end
+
+          children[#children + 1] = {
+            start = i - 1,
+            ["end"] = close_brace,
+            ctx = { Function = { name = name, params = params } },
+          }
+          i = close_brace + 1
+        end
+      end
+    end
+  end
+
+  return { expand = children }
+end
+
+-- Round 1: function bodies.
+local function body_pass(source, span, ctx)
+  if ctx.Function == nil then
+    return "failed"
+  end
+
+  local children = {}
+  local i = span.start + 1
+  local limit = span["end"]
+
+  while i <= limit do
+    local s0, e0 = source:find("return", i, true)
+    if not s0 or e0 > limit then
+      break
+    end
+    local semi = source:find(";", e0 + 1, true)
+    if not semi or semi > limit then
+      break
+    end
+    children[#children + 1] = {
+      start = s0 - 1,
+      ["end"] = semi,
+      ctx = { Return = { ["function"] = ctx.Function.name } },
+    }
+    i = semi + 1
+  end
+
+  return { expand = children }
+end
+
+-- Round 2: the checker.
+local function return_pass(source, span, ctx)
+  if ctx.Return == nil then
+    return "failed"
+  end
+  local text = source:sub(span.start + 1, span["end"])
+  local expr = text:match("^return%s*(.-)%s*;$")
+  if expr == nil or expr == "" then
+    return "failed"
+  end
+  return "done"
+end
+
 return {
   name = "minilang",
   root_ctx = { File = true },
-  passes = {
-    -- Round 0: the file -> one region per `def name(params) { ... }`.
-    function(source, span, ctx)
-      if ctx.File == nil then return "failed" end
-      local children = {}
-      local i = span.start + 1
-      while i <= span["end"] do
-        local name = source:match("^def%s+([%w_]+)", i)
-        if not name then
-          i = i + 1 -- malformed line: skip one byte, keep scanning
-        else
-          local p0 = source:find("(", i, true)
-          local p1 = source:find(")", p0, true)
-          local params = {}
-          for p in source:sub(p0 + 1, p1 - 1):gmatch("[%w_]+") do
-            params[#params + 1] = p
-          end
-          children[#children + 1] = {
-            start = i - 1,
-            ["end"] = source:find("}", p1, true),
-            ctx = { Function = { name = name, params = params } },
-          }
-          i = source:find("}", p1, true) + 1
-        end
-      end
-      return { expand = children }
-    end,
-
-    -- Round 1: function bodies -> `return ...;` regions.
-    function(source, span, ctx)
-      if ctx.Function == nil then return "failed" end
-      local children = {}
-      local i = span.start + 1
-      while i <= span["end"] do
-        local s0, e0 = source:find("return", i, true)
-        if not s0 or e0 > span["end"] then break end
-        local semi = source:find(";", e0 + 1, true)
-        if not semi or semi > span["end"] then break end
-        children[#children + 1] = {
-          start = s0 - 1, ["end"] = semi,
-          ctx = { Return = { ["function"] = ctx.Function.name } },
-        }
-        i = semi + 1
-      end
-      return { expand = children }
-    end,
-
-    -- Round 2: the checker.
-    function(source, span, ctx)
-      if ctx.Return == nil then return "failed" end
-      local expr = source:sub(span.start + 1, span["end"]):match("^return%s*(.-)%s*;$")
-      if expr == "" then return "failed" end
-      return "done"
-    end,
-  },
+  passes = { functions_pass, body_pass, return_pass },
 
   diagnostic = function(source, node)
-    if node.ctx.Return then
-      return { message = "empty return in `" .. node.ctx.Return["function"] .. "`" }
+    if node.ctx and node.ctx.Return then
+      return {
+        message = "empty return in `" .. node.ctx.Return["function"] .. "`",
+        severity = 1,
+      }
     end
+    return nil
   end,
 
   symbols = function(nodes)
     local out = {}
     for _, n in ipairs(nodes) do
-      if n.ctx.Function then
+      local c = n.ctx
+      if c and c.Function then
         out[#out + 1] = {
-          name = n.ctx.Function.name,
-          detail = "(" .. table.concat(n.ctx.Function.params, ", ") .. ")",
-          start = n.start, ["end"] = n["end"],
+          name = c.Function.name,
+          detail = "(" .. table.concat(c.Function.params, ", ") .. ")",
+          start = n.start,
+          ["end"] = n["end"],
         }
       end
     end
@@ -710,45 +810,102 @@ return {
 }
 ```
 
-What you get from the skeleton, for free:
+How to read the file:
 
-- **Incremental re-parses**: after an edit, only the touched function is
-  re-run; everything whose Lua context is deep-equal to before is reused.
-- **Error resilience**: a malformed definition costs one byte of resync,
-  and thrown Lua errors become `Failed` regions — never a crashed server.
-- **Position math**: you return byte ranges; editor `(line, character)`
-  positions in the negotiated encoding are handled for you.
+- `root_ctx` is the context of the whole file; round `r` of a run calls
+  `passes[r]` on every region whose context that pass accepts. A pass is
+  `(source, span, ctx)` → outcome.
+- Outcomes: a table with an `expand` array creates child regions, `"done"`
+  accepts the region, `"failed"` or `nil` leaves it failed (later passes
+  may retry). A Lua error thrown inside a pass is caught and treated as
+  `failed` — a broken pass never takes the server down.
+- `diagnostic` turns a failed region into a squiggle (return `nil` to stay
+  silent); `symbols` turns a snapshot of the tree into the outline. Both
+  hooks are optional.
+- Contexts are plain data, compared by **deep equality** — that is what
+  makes edits re-parse only the touched function while every other region
+  is reused as-is.
 
 > Note the `["end"]` spellings: `end` is a Lua keyword, so table fields
 > need bracket syntax. Ranges are **0-based, end-exclusive** byte offsets —
-> `start` inclusive, `end` exclusive.
+> while Lua *strings* are 1-based, hence the `span.start + 1` on the way
+> in and the `- 1` on the way out.
 
-### Wiring it up
+### 3. Wire it into Neovim
 
-Neovim — the ftplugin from section 6, one line changed:
+Two steps, both in your Neovim config directory (`stdpath("config")`,
+usually `~/.config/nvim/`).
+
+**Filetype detection** — add to your `init.lua`:
 
 ```lua
+vim.filetype.add({
+  extension = { mini = "minilang" },
+})
+```
+
+**Start the server per buffer** — create `ftplugin/minilang.lua` (the
+directory name must match the filetype; the file runs every time a
+`minilang` buffer opens):
+
+```lua
+-- ftplugin/minilang.lua
+local lang = vim.fn.stdpath("config") .. "/langs/minilang.lua"
+
 vim.lsp.start({
   name = "minilang",
-  cmd = {
-    "incraparse-lua-server",
-    vim.fn.stdpath("config") .. "/langs/minilang.lua",
-  },
+  cmd = { "incraparse-lua-server", lang },
   root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1]
     or vim.api.nvim_buf_get_name(0)),
 })
 ```
 
-VS Code — the extension from section 5, one line changed:
+(`vim.lsp.start` is idempotent per root: reopening a buffer in the same
+project reuses the running client.)
 
-```js
-const SERVER = "incraparse-lua-server"; // on PATH after cargo install
-// and pass the config: serverOptions run/debug become
-// { command: SERVER, args: ["/home/you/.config/minilang/lang.lua"] }
+### 4. Try it
+
+Open a `.mini` file with the demo from section 7:
+
+```minilang
+def add(a, b) { return a + b; }
+def bad(x) { return; }
+def noise( { return broken;
+def zero() { return 0; }
 ```
 
-The complete Lua definition (with balanced-brace body matching) ships as
-`crates/incraparse-lua/examples/minilang.lua`.
+You should see (this recipe was verified end-to-end on Neovim 0.12):
+
+- **one** diagnostic, on `bad`'s `return;` — the malformed `noise` line is
+  skipped, and `zero` still parses *after* it. Coarse structure survives
+  broken regions, which is incraparse's whole point.
+- Fix `return;` → `return x;` and the squiggle disappears immediately
+  (only that function was re-parsed).
+- Document symbols (`:lua vim.lsp.buf.document_symbol()`, bound to `gO` on
+  recent Neovim) list `add(a, b)`, `bad(x)`, `zero()` — and never `noise`.
+- `:checkhealth vim.lsp` shows the `minilang` client attached. If anything
+  misbehaves, `:LspLog` has the server's output — including errors thrown
+  inside your Lua passes.
+
+> **TODO: VS Code.** This binary works with the VS Code extension from
+> section 5 unchanged — its `serverOptions` become
+> `{ command: "incraparse-lua-server", args: ["…/langs/minilang.lua"] }` —
+> but a self-contained, copy-pasteable recipe for this appendix has not
+> been written yet. Contributions welcome.
+
+What you get from the skeleton, for free:
+
+- **Incremental re-parses**: after an edit, only the touched function is
+  re-run; everything whose Lua context is deep-equal to before is reused.
+- **Error resilience**: malformed input costs a byte or a line of resync,
+  never the file — and thrown Lua errors become `Failed` regions, not a
+  crashed server.
+- **Position math**: you return byte ranges; editor `(line, character)`
+  positions in the negotiated encoding are handled for you.
+
+The exact file shown above ships as
+`crates/incraparse-lua/examples/minilang.lua` and is exercised by the
+crate's stdio smoke test — including the malformed `noise` line.
 
 ## Appendix B: wrapping a real combinator
 

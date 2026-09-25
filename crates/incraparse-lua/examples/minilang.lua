@@ -44,44 +44,48 @@ local function functions_pass(source, span, ctx)
       if not open_paren then
         break
       end
+      -- Parameter lists live on one line: a missing `)` costs the line,
+      -- never the definitions after it.
+      local nl = source:find("\n", open_paren, true)
+      local line_end = nl and (nl - 1) or limit
       local close_paren = source:find(")", open_paren + 1, true)
-      if not close_paren then
-        break
-      end
-
-      local params = {}
-      for p in source:sub(open_paren + 1, close_paren - 1):gmatch("[%w_]+") do
-        params[#params + 1] = p
-      end
-
-      local open_brace = source:find("{", close_paren + 1, true)
-      if not open_brace then
-        i = close_paren + 1
+      if close_paren == nil or close_paren > line_end then
+        i = line_end + 1 -- malformed header line: skip it, keep scanning
       else
-        local depth, close_brace = 1, nil
-        for j = open_brace + 1, limit do
-          local ch = source:sub(j, j)
-          if ch == "{" then
-            depth = depth + 1
-          elseif ch == "}" then
-            depth = depth - 1
-            if depth == 0 then
-              close_brace = j
-              break
+        local params = {}
+        for p in source:sub(open_paren + 1, close_paren - 1):gmatch("[%w_]+") do
+          params[#params + 1] = p
+        end
+
+        local open_brace = source:find("{", close_paren + 1, true)
+        if not open_brace then
+          i = close_paren + 1
+        else
+          local depth, close_brace = 1, nil
+          for j = open_brace + 1, limit do
+            local ch = source:sub(j, j)
+            if ch == "{" then
+              depth = depth + 1
+            elseif ch == "}" then
+              depth = depth - 1
+              if depth == 0 then
+                close_brace = j
+                break
+              end
             end
           end
-        end
 
-        if not close_brace then
-          break
-        end
+          if not close_brace then
+            break
+          end
 
-        children[#children + 1] = {
-          start = i - 1,
-          ["end"] = close_brace,
-          ctx = { Function = { name = name, params = params } },
-        }
-        i = close_brace + 1
+          children[#children + 1] = {
+            start = i - 1,
+            ["end"] = close_brace,
+            ctx = { Function = { name = name, params = params } },
+          }
+          i = close_brace + 1
+        end
       end
     end
   end

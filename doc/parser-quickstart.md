@@ -394,10 +394,8 @@ empty value stayed in the tree as a `Failed` leaf — that's what the
 line, with both sections above carried over untouched.
 
 To put it in an editor, it's the exact same wiring as the LSP tutorial's
-VS Code (section 5) and Neovim (section 6) recipes — only the command
-changes, to `incraparse-lua-server /path/to/ini.lua`. The full details,
-including ready-made Neovim and VS Code snippets, are in
-[Appendix A of the LSP tutorial](lsp-tutorial.md#appendix-a-a-language-server-in-pure-lua).
+Neovim recipes (section 6, or Appendix A for a self-contained walkthrough)
+— only the command changes, to `incraparse-lua-server /path/to/ini.lua`.
 
 Three Lua-specific things to know:
 
