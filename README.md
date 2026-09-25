@@ -1,4 +1,4 @@
-# incraparse
+# increparse
 
 Multi-pass **fixpoint parsing** for editors, LSPs, and compilers.
 
@@ -6,13 +6,13 @@ This repository is a cargo workspace with two crates:
 
 | Crate | Role |
 |-------|------|
-| [`crates/incraparse`](crates/incraparse) | The engine: passes, schedules, fixpoint rounds, incremental edits, executors, cancellation. Zero required dependencies. |
-| [`crates/incraparse-lsp`](crates/incraparse-lsp) | LSP adapter: `serve()` + `Language` trait skeleton, position encodings, `Document` change translation, diagnostics bridge. |
-| [`crates/incraparse-nom`](crates/incraparse-nom) | Wrap nom 8 parsers in passes — correct absolute-span rebasing included. |
-| [`crates/incraparse-chumsky`](crates/incraparse-chumsky) | Wrap chumsky 0.10 parsers in passes — same rebasing, `SimpleSpan` in. |
-| [`crates/incraparse-lua`](crates/incraparse-lua) | Define a whole language server in one Lua file (`incraparse-lua-server lang.lua`) — for Neovim/VS Code users who'd rather not write Rust. |
+| [`crates/increparse`](crates/increparse) | The engine: passes, schedules, fixpoint rounds, incremental edits, executors, cancellation. Zero required dependencies. |
+| [`crates/increparse-lsp`](crates/increparse-lsp) | LSP adapter: `serve()` + `Language` trait skeleton, position encodings, `Document` change translation, diagnostics bridge. |
+| [`crates/increparse-nom`](crates/increparse-nom) | Wrap nom 8 parsers in passes — correct absolute-span rebasing included. |
+| [`crates/increparse-chumsky`](crates/increparse-chumsky) | Wrap chumsky 0.10 parsers in passes — same rebasing, `SimpleSpan` in. |
+| [`crates/increparse-lua`](crates/increparse-lua) | Define a whole language server in one Lua file (`increparse-lua-server lang.lua`) — for Neovim/VS Code users who'd rather not write Rust. |
 
-`incraparse` is *not* another parser combinator library. It is the missing
+`increparse` is *not* another parser combinator library. It is the missing
 piece **around** them: an engine that executes **schedules of passes** over a
 growing parse tree until the tree settles — and a pass can wrap *any* parsing
 technique (`nom`, `chumsky`, a PEG, regexes, or hand-rolled scanning).
@@ -20,7 +20,7 @@ technique (`nom`, `chumsky`, a PEG, regexes, or hand-rolled scanning).
 ## The idea
 
 Parsing a real program in one monolithic sweep is brittle: one syntax error in
-a function body can hide the structure of an entire file. `incraparse` lets
+a function body can hide the structure of an entire file. `increparse` lets
 you parse in widening rounds of understanding instead.
 
 Picture a small language with definitions like:
@@ -78,7 +78,7 @@ exactly — e.g. a file containing exactly one function.)
 
 ## Getting started
 
-- **New to incraparse?** [`doc/parser-quickstart.md`](doc/parser-quickstart.md)
+- **New to increparse?** [`doc/parser-quickstart.md`](doc/parser-quickstart.md)
   builds a working INI parser in ~30 minutes — no editor, no LSP — in Rust
   or, if you'd rather not write Rust at all, in pure Lua.
 - **Then** [`doc/lsp-tutorial.md`](doc/lsp-tutorial.md) puts it into VS Code
@@ -87,7 +87,7 @@ exactly — e.g. a file containing exactly one function.)
 ## Quick start
 
 ```rust
-use incraparse::prelude::*;
+use increparse::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ctx {
@@ -112,7 +112,7 @@ let engine = Engine::with((functions, functions));
 let source = "def main() { }";
 let mut tree = ParseTree::from_source(source, 0, Ctx::File);
 
-let report = engine.run(source, &mut tree, &SerialExecutor, &incraparse::CancelToken::new());
+let report = engine.run(source, &mut tree, &SerialExecutor, &increparse::CancelToken::new());
 
 assert!(report.reached_fixpoint);
 assert_eq!(tree.status(tree.root()), Status::Expanded);
@@ -152,7 +152,7 @@ per edit instead of the whole file).
 
 ## Language servers
 
-`incraparse-lsp` bridges the engine to the Language Server Protocol. Two
+`increparse-lsp` bridges the engine to the Language Server Protocol. Two
 layers:
 
 - **`serve()` + `SimpleLanguage`** — describe the language with a builder
@@ -168,9 +168,9 @@ layers:
   rather write the loop yourself (or use another server framework; only the
   `serve()` layer needs `lsp-server`).
 
-`crates/incraparse-lsp/examples/mini_lang_server.rs` is a complete small
+`crates/increparse-lsp/examples/mini_lang_server.rs` is a complete small
 server (diagnostics + document symbols) with an end-to-end stdio smoke test
-in `crates/incraparse-lsp/tests/server_smoke.rs`.
+in `crates/increparse-lsp/tests/server_smoke.rs`.
 
 **Want to build your own?** Follow [`doc/lsp-tutorial.md`](doc/lsp-tutorial.md)
 — a step-by-step guide that turns MiniLang into a working language server
@@ -215,20 +215,20 @@ concurrency machinery at all.
 
 v0.1.0 — core semantics are settling; the API may still change.
 
-[`Pass`]: https://docs.rs/incraparse/latest/incraparse/trait.Pass.html
-[`Schedule`]: https://docs.rs/incraparse/latest/incraparse/struct.Schedule.html
-[`ParseTree`]: https://docs.rs/incraparse/latest/incraparse/struct.ParseTree.html
-[`Engine`]: https://docs.rs/incraparse/latest/incraparse/struct.Engine.html
-[`Session`]: https://docs.rs/incraparse/latest/incraparse/struct.Session.html
-[`Edit`]: https://docs.rs/incraparse/latest/incraparse/struct.Edit.html
-[`Outcome`]: https://docs.rs/incraparse/latest/incraparse/enum.Outcome.html
-[`RunReport`]: https://docs.rs/incraparse/latest/incraparse/struct.RunReport.html
-[`Span`]: https://docs.rs/incraparse/latest/incraparse/struct.Span.html
-[`Status`]: https://docs.rs/incraparse/latest/incraparse/enum.Status.html
-[`NodeId`]: https://docs.rs/incraparse/latest/incraparse/struct.NodeId.html
-[`Executor`]: https://docs.rs/incraparse/latest/incraparse/trait.Executor.html
-[`SerialExecutor`]: https://docs.rs/incraparse/latest/incraparse/struct.SerialExecutor.html
-[`RayonExecutor`]: https://docs.rs/incraparse/latest/incraparse/struct.RayonExecutor.html
-[`CancelToken`]: https://docs.rs/incraparse/latest/incraparse/struct.CancelToken.html
-[`LineIndex`]: https://docs.rs/incraparse-lsp/latest/incraparse_lsp/struct.LineIndex.html
-[`PositionEncoding`]: https://docs.rs/incraparse-lsp/latest/incraparse_lsp/enum.PositionEncoding.html
+[`Pass`]: https://docs.rs/increparse/latest/increparse/trait.Pass.html
+[`Schedule`]: https://docs.rs/increparse/latest/increparse/struct.Schedule.html
+[`ParseTree`]: https://docs.rs/increparse/latest/increparse/struct.ParseTree.html
+[`Engine`]: https://docs.rs/increparse/latest/increparse/struct.Engine.html
+[`Session`]: https://docs.rs/increparse/latest/increparse/struct.Session.html
+[`Edit`]: https://docs.rs/increparse/latest/increparse/struct.Edit.html
+[`Outcome`]: https://docs.rs/increparse/latest/increparse/enum.Outcome.html
+[`RunReport`]: https://docs.rs/increparse/latest/increparse/struct.RunReport.html
+[`Span`]: https://docs.rs/increparse/latest/increparse/struct.Span.html
+[`Status`]: https://docs.rs/increparse/latest/increparse/enum.Status.html
+[`NodeId`]: https://docs.rs/increparse/latest/increparse/struct.NodeId.html
+[`Executor`]: https://docs.rs/increparse/latest/increparse/trait.Executor.html
+[`SerialExecutor`]: https://docs.rs/increparse/latest/increparse/struct.SerialExecutor.html
+[`RayonExecutor`]: https://docs.rs/increparse/latest/increparse/struct.RayonExecutor.html
+[`CancelToken`]: https://docs.rs/increparse/latest/increparse/struct.CancelToken.html
+[`LineIndex`]: https://docs.rs/increparse-lsp/latest/increparse_lsp/struct.LineIndex.html
+[`PositionEncoding`]: https://docs.rs/increparse-lsp/latest/increparse_lsp/enum.PositionEncoding.html

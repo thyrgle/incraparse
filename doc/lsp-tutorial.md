@@ -1,16 +1,16 @@
 # Build a Language Server for MiniLang
 
-A hands-on tutorial: parse a toy language with [incraparse](..), turn it into
+A hands-on tutorial: parse a toy language with [increparse](..), turn it into
 a Language Server Protocol (LSP) server, and get it running in **VS Code** and
 **Neovim** — live diagnostics and document symbols included.
 
-> New to incraparse? Start with
+> New to increparse? Start with
 > [`doc/parser-quickstart.md`](parser-quickstart.md) — a 30-minute,
 > editor-free introduction to writing passes. This tutorial picks up where
 > it ends and puts a parser into an editor.
 
 The finished product of every step lives in the repository at
-[`crates/incraparse-lsp/examples/mini_lang_server.rs`](../crates/incraparse-lsp/examples/mini_lang_server.rs);
+[`crates/increparse-lsp/examples/mini_lang_server.rs`](../crates/increparse-lsp/examples/mini_lang_server.rs);
 diff your code against it whenever something looks off.
 
 > Everything in this tutorial is checked against the pieces it touches: the
@@ -22,7 +22,7 @@ diff your code against it whenever something looks off.
 ## 0. What we're building
 
 ```
-┌─────────┐   JSON-RPC over stdio   ┌────────────────┐   incraparse API   ┌──────────────┐
+┌─────────┐   JSON-RPC over stdio   ┌────────────────┐   increparse API   ┌──────────────┐
 │  editor │ ◄─────────────────────► │ minilang-lsp   │ ◄────────────────► │  parse tree  │
 │         │   didOpen/didChange,    │ (this tutorial)│                    │  (multi-pass │
 └─────────┘   publishDiagnostics,  └────────────────┘                    │   fixpoint)  │
@@ -39,7 +39,7 @@ def zero() { return 0; }
 By the end, an editor will show a red squiggle under a broken `return`,
 clean up the moment you fix it, and list all functions in the outline —
 even while other functions in the same file are still broken. That last
-part is incraparse's whole point: each pass either parses a region or
+part is increparse's whole point: each pass either parses a region or
 leaves it as a surviving `Failed` leaf, so one error never hides the file.
 
 **Prerequisites:** Rust (`rustup`), plus VS Code and/or Neovim (≥ 0.8).
@@ -54,7 +54,7 @@ $ cargo new minilang-lsp
 $ cd minilang-lsp
 ```
 
-Point `Cargo.toml` at incraparse (adjust the `path` to wherever this
+Point `Cargo.toml` at increparse (adjust the `path` to wherever this
 repository lives on your machine, or use the versions from crates.io):
 
 ```toml
@@ -64,14 +64,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-incraparse = "0.1"
-incraparse-lsp = "0.1"
+increparse = "0.1"
+increparse-lsp = "0.1"
 lsp-types = "0.97"
 ```
 
 ## 2. Parsing MiniLang in passes
 
-incraparse is *not* a parser combinator library — it runs **schedules of
+increparse is *not* a parser combinator library — it runs **schedules of
 passes** over a growing parse tree until the tree settles. Each pass is a
 function from `(source text, region, context)` to an `Outcome`:
 
@@ -93,8 +93,8 @@ Create `src/main.rs` and start with the context type and shared scanning
 helpers:
 
 ```rust
-use incraparse::prelude::*;
-use incraparse_lsp::{Document, FailedNode, NodeLabel, SimpleLanguage};
+use increparse::prelude::*;
+use increparse_lsp::{Document, FailedNode, NodeLabel, SimpleLanguage};
 use lsp_types::Diagnostic;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -296,7 +296,7 @@ Editors and servers speak JSON-RPC over stdio. A server has to handle:
 3. requests like `textDocument/documentSymbol`,
 4. `shutdown` + `exit` to end.
 
-`incraparse-lsp`'s skeleton owns *all of that*. You describe your language —
+`increparse-lsp`'s skeleton owns *all of that*. You describe your language —
 the pass schedule, the root context, how failing regions become diagnostics,
 how the tree becomes outline symbols — as data, and hand it to `serve()`:
 
@@ -329,7 +329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ => None,
         });
 
-    incraparse_lsp::serve(language)
+    increparse_lsp::serve(language)
 }
 ```
 
@@ -344,7 +344,7 @@ Everything you'd otherwise hand-roll:
 - the `initialize` handshake and capability advertisement,
 - the open-document table (URI → text + parse tree + client version),
 - `didChange` translation: each incremental delta becomes a byte-range
-  `incraparse::Edit`, the engine runs once per batch, and the parse tree
+  `increparse::Edit`, the engine runs once per batch, and the parse tree
   **reuses** every region the edit didn't touch,
 - `publishDiagnostics` after every batch (and the empty publish on close),
 - `documentSymbol` dispatch, and polite `MethodNotFound` for everything
@@ -357,7 +357,7 @@ connection while joining the I/O threads — deadlocks, because
 dropped. The skeleton's loop owns the `Connection` in a function that
 returns *before* `join()` runs, so the bug is structurally impossible. The
 complete hand-written loop, deadlock trap and all, is preserved in
-[`crates/incraparse-lsp/examples/manual_server.rs`](../crates/incraparse-lsp/examples/manual_server.rs)
+[`crates/increparse-lsp/examples/manual_server.rs`](../crates/increparse-lsp/examples/manual_server.rs)
 — read it side by side with the trait above to see what the skeleton
 absorbs.
 
@@ -592,7 +592,7 @@ You should see:
 |---|---|
 | Editor says the server "exited with status" or nothing happens | Run the binary alone (step 4) — does it print nothing and wait? Good. Then check the absolute path in `extension.js` / `minilang.lua`. |
 | No diagnostics but no errors either | Is the file extension recognized? VS Code: bottom-right shows the language id (`minilang`); Neovim: `:set ft?` must say `minilang`. |
-| Wrong squiggle positions in files with emoji/accented characters | An encoding mismatch — we negotiated UTF-16; make sure the client didn't force something else. `incraparse-lsp` converts both ways via `LineIndex`. |
+| Wrong squiggle positions in files with emoji/accented characters | An encoding mismatch — we negotiated UTF-16; make sure the client didn't force something else. `increparse-lsp` converts both ways via `LineIndex`. |
 | Server dies on exit / hangs at shutdown | Only possible with a hand-written loop — `serve()` is immune. If you wrote your own: the loop must own the `Connection`, and it must return before `io_threads.join()` (see step 3). |
 | Where are the logs? | VS Code: Output panel → *MiniLang Language Server*. Neovim: `:LspLog`. |
 
@@ -623,13 +623,13 @@ but its recipe is still pending — see the TODO at the end.
 ### 1. Install the server binary
 
 ```console
-$ cargo install incraparse-lua-server
-$ which incraparse-lua-server
-~/.cargo/bin/incraparse-lua-server
+$ cargo install increparse-lua-server
+$ which increparse-lua-server
+~/.cargo/bin/increparse-lua-server
 ```
 
 (From a checkout of this repository instead:
-`cargo install --path crates/incraparse-lua`.)
+`cargo install --path crates/increparse-lua`.)
 
 ### 2. Write the language
 
@@ -652,7 +652,7 @@ yet — make it):
 --   round 2: return -> "done" if the expression is non-empty
 --
 -- Use with:
---   incraparse-lua-server /path/to/this/file.lua
+--   increparse-lua-server /path/to/this/file.lua
 
 local function skip_ws(s, i)
   while i <= #s and s:sub(i, i):match("%s") do
@@ -854,7 +854,7 @@ local lang = vim.fn.stdpath("config") .. "/langs/minilang.lua"
 
 vim.lsp.start({
   name = "minilang",
-  cmd = { "incraparse-lua-server", lang },
+  cmd = { "increparse-lua-server", lang },
   root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1]
     or vim.api.nvim_buf_get_name(0)),
 })
@@ -878,7 +878,7 @@ You should see (this recipe was verified end-to-end on Neovim 0.12):
 
 - **one** diagnostic, on `bad`'s `return;` — the malformed `noise` line is
   skipped, and `zero` still parses *after* it. Coarse structure survives
-  broken regions, which is incraparse's whole point.
+  broken regions, which is increparse's whole point.
 - Fix `return;` → `return x;` and the squiggle disappears immediately
   (only that function was re-parsed).
 - Document symbols (`:lua vim.lsp.buf.document_symbol()`, bound to `gO` on
@@ -889,7 +889,7 @@ You should see (this recipe was verified end-to-end on Neovim 0.12):
 
 > **TODO: VS Code.** This binary works with the VS Code extension from
 > section 5 unchanged — its `serverOptions` become
-> `{ command: "incraparse-lua-server", args: ["…/langs/minilang.lua"] }` —
+> `{ command: "increparse-lua-server", args: ["…/langs/minilang.lua"] }` —
 > but a self-contained, copy-pasteable recipe for this appendix has not
 > been written yet. Contributions welcome.
 
@@ -904,7 +904,7 @@ What you get from the skeleton, for free:
   positions in the negotiated encoding are handled for you.
 
 The exact file shown above ships as
-`crates/incraparse-lua/examples/minilang.lua` and is exercised by the
+`crates/increparse-lua/examples/minilang.lua` and is exercised by the
 crate's stdio smoke test — including the malformed `noise` line.
 
 ## Appendix B: wrapping a real combinator
@@ -916,9 +916,9 @@ a drop-in for a pass; the engine never knows the difference.
 
 ```toml
 [dependencies]
-incraparse-nom = "0.1"
+increparse-nom = "0.1"
 # or
-incraparse-chumsky = "0.1"
+increparse-chumsky = "0.1"
 ```
 
 ### The same `FunctionsPass` with nom
@@ -931,8 +931,8 @@ incremental re-parsing), turns `Err(_)` into `Outcome::Failed`, and empty
 children into `Outcome::Done`.
 
 ```rust
-use incraparse::{Outcome, Pass, Span};
-use incraparse_nom::{nom_pass, NomChildren};
+use increparse::{Outcome, Pass, Span};
+use increparse_nom::{nom_pass, NomChildren};
 use nom::IResult;
 use nom::Parser;
 use nom::bytes::complete::{tag, take_while, take_while1};
@@ -1004,15 +1004,15 @@ impl Pass for FunctionsPass {
 
 The schedule, the server, the editor wiring — all unchanged. A complete
 runnable version (with balanced-brace body matching) is
-`crates/incraparse-nom/examples/mini_lang_nom.rs`.
+`crates/increparse-nom/examples/mini_lang_nom.rs`.
 
 ### Or chumsky
 
-`incraparse-chumsky` works the same way, with two chumsky-0.10-specific
+`increparse-chumsky` works the same way, with two chumsky-0.10-specific
 notes: parsers are built in a factory fn tied to the input's lifetime, and
 `parse` requires whole-input consumption (end region-tolerant parsers with
 `.then_ignore(any().repeated())`). See
-`crates/incraparse-chumsky/examples/mini_lang_chumsky.rs` for a full
+`crates/increparse-chumsky/examples/mini_lang_chumsky.rs` for a full
 `FunctionsPass` including chumsky-side error recovery
 (`skip_then_retry_until`).
 

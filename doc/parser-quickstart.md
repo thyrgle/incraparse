@@ -1,14 +1,14 @@
 # Your first parser in 30 minutes
 
 This guide builds a **parser** for a tiny configuration language — no LSP,
-no editor, no servers. Just incraparse, a few closures, and a tree you can
+no editor, no servers. Just increparse, a few closures, and a tree you can
 inspect. When it works, continue to [`doc/lsp-tutorial.md`](lsp-tutorial.md)
 to put it in an editor. (Would you rather not write Rust at all?
 [Section 5](#5-the-same-parser-in-pure-lua) builds the same language in
 pure Lua.)
 
 The language is the classic INI format — deliberately *not* a
-functions-and-statements language, to show that incraparse doesn't care
+functions-and-statements language, to show that increparse doesn't care
 what shape your language has:
 
 ```ini
@@ -25,12 +25,12 @@ enabled = true
 ```console
 $ cargo new ini-parser
 $ cd ini-parser
-$ cargo add incraparse
+$ cargo add increparse
 ```
 
 ## 2. The language, in three passes
 
-incraparse runs **schedules of passes** over a growing tree. A pass is a
+increparse runs **schedules of passes** over a growing tree. A pass is a
 closure from `(source, region, context)` to an outcome:
 
 - `{ expand = ... }` — the region contains smaller regions; their contexts
@@ -42,7 +42,7 @@ For INI: round 0 finds `[section]` regions; round 1 finds `key = value`
 lines inside each section. Replace `src/main.rs` with:
 
 ```rust
-use incraparse::prelude::*;
+use increparse::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum IniCtx {
@@ -171,7 +171,7 @@ rest of the file keeps parsing.
 
 ## 4. Testing your passes
 
-`incraparse::run` is designed for tests too:
+`increparse::run` is designed for tests too:
 
 ```rust
 #[test]
@@ -196,14 +196,14 @@ fn sections_are_found() {
 
 ## 5. The same parser, in pure Lua
 
-No Rust at all? `incraparse-lua` defines an entire language server — the
+No Rust at all? `increparse-lua` defines an entire language server — the
 passes, the diagnostics, the outline — in **one Lua file**, run by a small
 binary. Here is the same INI language, same three-pass schedule. Save this
 as `ini.lua`:
 
 ```lua
 -- The INI language from the quickstart, in pure Lua.
--- Run with: incraparse-lua-server ini.lua
+-- Run with: increparse-lua-server ini.lua
 
 -- Round 0: the whole file -> one region per `[section]`.
 -- A section spans from its `[` to the next `[` (or end of file).
@@ -320,11 +320,11 @@ return {
 }
 ```
 
-Install the binary that runs it (or `cargo install --path crates/incraparse-lua`
+Install the binary that runs it (or `cargo install --path crates/increparse-lua`
 from a checkout of this repository):
 
 ```console
-$ cargo install incraparse-lua-server
+$ cargo install increparse-lua-server
 ```
 
 A language server speaks LSP over stdio — which you can drive from a
@@ -336,7 +336,7 @@ prints the now-empty diagnostics, then asks for the outline:
 import json, subprocess
 
 p = subprocess.Popen(
-    ["incraparse-lua-server", "ini.lua"],
+    ["increparse-lua-server", "ini.lua"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
 def send(msg):
@@ -395,7 +395,7 @@ line, with both sections above carried over untouched.
 
 To put it in an editor, it's the exact same wiring as the LSP tutorial's
 Neovim recipes (section 6, or Appendix A for a self-contained walkthrough)
-— only the command changes, to `incraparse-lua-server /path/to/ini.lua`.
+— only the command changes, to `increparse-lua-server /path/to/ini.lua`.
 
 Three Lua-specific things to know:
 
@@ -419,4 +419,4 @@ Three Lua-specific things to know:
   appendix at the end of the LSP tutorial.
 - **Prefer Lua?** [Section 5](#5-the-same-parser-in-pure-lua) rebuilds this
   exact language in pure Lua — one file, no Rust — and
-  [`incraparse-lua`](../crates/incraparse-lua) runs it as a language server.
+  [`increparse-lua`](../crates/increparse-lua) runs it as a language server.
