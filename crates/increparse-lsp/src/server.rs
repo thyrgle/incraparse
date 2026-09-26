@@ -13,9 +13,9 @@ use std::error::Error;
 use increparse::{CancelToken, Engine};
 use lsp_server::Connection;
 use lsp_types::{
-    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, HoverParams, Location, OneOf, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    CodeActionParams, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, HoverParams, Location, OneOf,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 
 use crate::diagnostics::{self, DiagnosticsOptions, FailedNode};
@@ -155,6 +155,25 @@ pub trait Language<C: Clone + PartialEq + Send + 'static>: Send + Sync + 'static
         false
     }
 
+    /// Runtime hook for code-action support (the editor's quickfix
+    /// lightbulb); defaults to `false`.
+    fn supports_code_actions(&self) -> bool {
+        false
+    }
+
+    /// Code actions for the given range — typically quickfixes for the
+    /// diagnostics published there. The skeleton dispatches
+    /// `textDocument/codeAction` when
+    /// [`supports_code_actions`](Self::supports_code_actions) is `true`.
+    fn code_action(
+        &self,
+        doc: &Document<C>,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::CodeAction> {
+        let _ = (doc, range);
+        Vec::new()
+    }
+
     /// Hover contents for the byte `offset` in `doc`, or `None`.
     ///
     /// The skeleton converts the client's position (in the negotiated
@@ -199,6 +218,9 @@ where
             .then(|| lsp_types::CompletionOptions {
                 ..Default::default()
             }),
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(
+            language.supports_code_actions(),
+        )),
         ..Default::default()
     }
 }
@@ -309,6 +331,22 @@ where
                             .and_then(|doc| language.completion(doc, doc.offset(tdp.position)));
                         connection.sender.send(lsp_server::Message::Response(
                             lsp_server::Response::new_ok(req.id, completions),
+                        ))?;
+                    }
+                    "textDocument/codeAction" if language.supports_code_actions() => {
+                        let params: CodeActionParams = serde_json::from_value(req.params)?;
+                        let actions = documents
+                            .get(&params.text_document.uri)
+                            .map(|doc| language.code_action(doc, params.range))
+                            .unwrap_or_default();
+                        connection.sender.send(lsp_server::Message::Response(
+                            lsp_server::Response::new_ok(
+                                req.id,
+                                actions
+                                    .into_iter()
+                                    .map(lsp_types::CodeActionOrCommand::CodeAction)
+                                    .collect::<Vec<_>>(),
+                            ),
                         ))?;
                     }
                     _ => {

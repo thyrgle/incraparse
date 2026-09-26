@@ -58,6 +58,7 @@ pub struct SimpleLanguage<C> {
     hover_fn: Option<Arc<HoverFn<C>>>,
     definition_fn: Option<Arc<DefinitionFn<C>>>,
     completion_fn: Option<Arc<CompletionFn<C>>>,
+    code_action_fn: Option<Arc<CodeActionFn<C>>>,
 }
 
 /// The type of the [`SimpleLanguage::describe_fn`] hook: describe a
@@ -72,6 +73,11 @@ pub type DefinitionFn<C> = dyn Fn(&Document<C>, usize) -> Option<Vec<Location>> 
 
 /// The type of the [`SimpleLanguage::completion_fn`] hook.
 pub type CompletionFn<C> = dyn Fn(&Document<C>, usize) -> Option<CompletionResponse> + Send + Sync;
+
+/// The type of the [`SimpleLanguage::code_action_fn`] hook: code
+/// actions (typically quickfixes) for a range.
+pub type CodeActionFn<C> =
+    dyn Fn(&Document<C>, lsp_types::Range) -> Vec<lsp_types::CodeAction> + Send + Sync;
 
 /// A display name (and optional detail) for one tree node — what
 /// [`SimpleLanguage::label_fn`] returns to power the outline view.
@@ -126,6 +132,7 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
             hover_fn: None,
             definition_fn: None,
             completion_fn: None,
+            code_action_fn: None,
         }
     }
 
@@ -211,6 +218,19 @@ impl<C: Clone + PartialEq + Send + 'static> SimpleLanguage<C> {
         self.completion_fn = Some(Arc::new(f));
         self
     }
+
+    /// Code actions for a range — typically quickfixes for the
+    /// diagnostics published there.
+    pub fn code_action_fn(
+        mut self,
+        f: impl Fn(&Document<C>, lsp_types::Range) -> Vec<lsp_types::CodeAction>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.code_action_fn = Some(Arc::new(f));
+        self
+    }
 }
 
 /// `C` must additionally be `Sync` because the stored closures accept
@@ -230,6 +250,21 @@ impl<C: Clone + PartialEq + Send + Sync + 'static> Language<C> for SimpleLanguag
 
     fn supports_completion(&self) -> bool {
         self.completion_fn.is_some()
+    }
+
+    fn supports_code_actions(&self) -> bool {
+        self.code_action_fn.is_some()
+    }
+
+    fn code_action(
+        &self,
+        doc: &Document<C>,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::CodeAction> {
+        match &self.code_action_fn {
+            Some(f) => f(doc, range),
+            None => Vec::new(),
+        }
     }
 
     fn hover(&self, doc: &Document<C>, offset: usize) -> Option<Hover> {
